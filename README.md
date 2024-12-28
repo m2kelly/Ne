@@ -69,7 +69,29 @@ All in all, the pipeline could be run as:
 
 3. A heat map of the Kendall's tau correlation coffecients of CpG transition mutations with each other (with a smoothing window size of 100). Manually check that there are no outliers.
 
+![Example heatmap](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/max_corr_heatmap.png)
+
 4. A graph of the correlation between CpG transitions and the rest of mutations for smoothing window sizes of 1-100. The window size with the maximum correlation between the two values is selected as the best smoothing window for this cycle.
+
+![Example smoothing range](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/smoothing_range_plot.png)
+
+5. A graph of the difference between the correlation within the CpG transitions group and the correlation within the rest of mutations. **Legacy!!** it is not used further down the pipeline
+of
+https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/smoothing_range_plot.png
+6. A file of the tried combinations of non-CpG transitions and their correlation with CpG transitions: best_correlations_smoothed_{run-name}.csv. The top raw in this list should have the chosen cohort of non-CpG transitions used downstream the analyis for this cycle.
+
+7. A box plot per each tried first quantile size. The box plots are the observed substitution rates for bins making each quantile. Grouped CpG transitions in red and grouped choosen non-CpG transitions in blue. 
+
+![Example box plot](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/boxes_plot.png)
+
+8. Remaining bias between the median of the mutation rates for each quantile for each tried population size. The population size with the least error is choosen as the best population size.
+
+![Example errors](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/error_points_log.png)
+
+
+8. Medians of the observed substitution rates for each quantile and the mutation rates (after correcting with the best population size)
+
+
 
 
 
