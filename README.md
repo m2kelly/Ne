@@ -46,6 +46,20 @@ All in all, the pipeline could be run as:
     p = Pipeline(name='name_of_the_run', directory='path/to/directory', generations=160000)
     p.run_until_min_error()
 
+## How it works?
+
+1. The pipeline starts by choosing the best smoothing window; it tries smoothing windows from 1 to a 100 and chooses the one that maximises the correlation between CpG transitions and other mutations. This is done through the module "BestSmoothing"
+
+2. Then the pipeline chooses a cohort of non-CpG transitions that correlates the best with CpG transitions. This is done through the module "BestNonCpGCandidates"
+
+3. Then it divides bins into quantiles and checks if there is a signal of parallel mutations. It also chooses the size of the first bin where methylated CpGs should be located. This is done through the module "ReccurenceVectors"
+    
+
+## Output
+1. A logs file:
+
+    The logs file holds all the logs of the pipeline. For
+
 
 
 
