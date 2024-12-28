@@ -89,7 +89,10 @@ https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_fo
 ![Example errors](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/error_points_log.png)
 
 
-8. Medians of the observed substitution rates for each quantile and the mutation rates (after correcting with the best population size)
+9. Medians of the observed substitution rates for each quantile and the mutation rates (after correcting with the best population size) in two plots, normalised by the smallest bin (better at viewing the bias of parallel mutations and the correction), and normalised by the mean of the bins (less prone to biasses and is the one used in calculating the error).
+
+![Example corrected normalised means of the quantiles](https://codeberg.org/hossam26644/NeParallel-estimator/raw/branch/master/plots_for_readme/best_pop_by_zero.png)
+
 
 
 
