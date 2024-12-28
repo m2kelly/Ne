@@ -52,8 +52,11 @@ All in all, the pipeline could be run as:
 
 2. Then the pipeline chooses a cohort of non-CpG transitions that correlates the best with CpG transitions. This is done through the module "BestNonCpGCandidates"
 
-3. Then it divides bins into quantiles and checks if there is a signal of parallel mutations. It also chooses the size of the first bin where methylated CpGs should be located. This is done through the module "ReccurenceVectors"
-    
+3. Then it divides bins into quantiles and checks if there is a signal of parallel mutations. It also chooses the size of the first bin where methylated CpGs should be located. This is done through the module "ReccurenceVectors".
+
+4. It then calculates the population size that best corrects for the effect of recurrence identified at the previous step. The population size is estimated in the module "PopSizeCalculator"
+
+5. The pipeline removes the least mutable percentage of the bins and repeat the steps 1-4. For each cycle, the error (the bias between CpG and non-CpG quantiles) determins the goodness of the correction. The pipeline keeps repeating steps 1-4 until the error stops decreasing. The population size with the least error is selected as "The" population size.
 
 ## Output
 1. A logs file:
