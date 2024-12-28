@@ -54,14 +54,20 @@ All in all, the pipeline could be run as:
 
 3. Then it divides bins into quantiles and checks if there is a signal of parallel mutations. It also chooses the size of the first bin where methylated CpGs should be located. This is done through the module "ReccurenceVectors".
 
-4. It then calculates the population size that best corrects for the effect of recurrence identified at the previous step. The population size is estimated in the module "PopSizeCalculator"
+4. It estimates the substitution rate per generation from the observed subsitutions through a markov chain process in the module "MarkovInfSites". Note that this step is done on the GPU.
 
-5. The pipeline removes the least mutable percentage of the bins and repeat the steps 1-4. For each cycle, the error (the bias between CpG and non-CpG quantiles) determins the goodness of the correction. The pipeline keeps repeating steps 1-4 until the error stops decreasing. The population size with the least error is selected as "The" population size.
+5. It then calculates the population size that best corrects for the effect of recurrence identified at the previous step. The population size is estimated in the module "PopSizeCalculator"
+
+6. The pipeline removes the least mutable percentage of the bins and repeat the steps 1-5. For each cycle, the error (the bias between CpG and non-CpG quantiles) determins the goodness of the correction. The pipeline keeps repeating steps 1-5 until the error stops decreasing. The population size with the least error is selected as "The" population size.
 
 ## Output
 1. A logs file:
 
-    The logs file holds all the logs of the pipeline. For
+    The logs file holds all the logs of the pipeline. For each cycle, it logs the chosen smoothing window size, the cohort of mutations selected as the cohort correlating the best with CpG transitions, the number of remaining smoothed bins after filteration (logged as len of cpg vector), the overall substitution rates divided by the number of generations and the corrected substitution rate per generation after the markov process correction, the estimated mutation rates after correcting for parallel mutations, each used population size (thorugh the search) and the erorr of each one, and the best estimated population size.
+
+2. A directory for each cycle with a different removed percentage of the least mutable bins. The rest of the outputs are located inside these directories.
+
+
 
 
 
