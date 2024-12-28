@@ -7,7 +7,7 @@
   
   
 
-Inputs:
+## Inputs:
 
 1. This pipeline takes as input two files (pickeled python), one for mutation counts per bin (usually a 100kb length) and one for the corresponding target size. Both are trinucleotide based contexts.
 
@@ -23,6 +23,30 @@ Inputs:
     and provide the name (the value between the curly brackets) as an input
 
 2. The directory where the two files (Inputs number 1) are located.
-3. 
+3. The estimated number of generations of the studied period.
+
+## Usage:
+
+1. Put the package in a directory and import it
+
+    Protip: you can put it in the python directory of liberaries and import it as any other library, e.g., like import pandas as pd
+
+2. Create a pipeline object: 
+
+    example: 
+
+        p = Pipeline(name='bins_after_defense', directory='../../', generations=160000)
+3. Run the pipeline:
+    example:
+        p.run_until_min_error(step=0.01, CpG_remove_percentage=0.0)
+
+All in all, the pipeline could be run as:
+   
+    from popsize_pipeline import Pipeline
+    p = Pipeline(name='name_of_the_run', directory='path/to/directory', generations=160000)
+    p.run_until_min_error()
+
+
+
 
    
