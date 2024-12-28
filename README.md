@@ -67,6 +67,10 @@ All in all, the pipeline could be run as:
 
 2. A directory for each cycle with a different removed percentage of the least mutable bins. The rest of the outputs are located inside these directories.
 
+3. A heat map of the Kendall's tau correlation coffecients of CpG transition mutations with each other (with a smoothing window size of 100). Manually check that there are no outliers.
+
+4. A graph of the correlation between CpG transitions and the rest of mutations for smoothing window sizes of 1-100. The window size with the maximum correlation between the two values is selected as the best smoothing window for this cycle.
+
 
 
 
