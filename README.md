@@ -1,8 +1,12 @@
 # Pipeline that estimates an effective population size based on the effect of parallel mutations
 
   
+## Prerequisites
 
-**This pipeline requires an Nvidia cuda enabeled gpu**
+1. This pipeline requires an Nvidia cuda enabeled gpu
+
+2. Install the Wright-Fisher Exact Solver 2 from https://github.com/dekoning-lab/wfes2 and change line 15 in pop_size/predictor.py to make the variable wfes_single points to the wfes_single you just installed**
+
 
   
   
