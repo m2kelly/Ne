@@ -20,6 +20,10 @@ class Operations():
         self.non_cpg_pool = non_cpg_pool
         self.silent = silent
 
+        #for filter random 
+        self.muts_dict_original_filter_random =None
+        self.occs_dict_original_filter_random=None
+
         if muts_dict_raw is None or occ_dict_raw is None:
             self.muts_dict_raw, self.occ_dict_raw = self.get_muts_and_occs(name, directory)
         else:
@@ -61,6 +65,12 @@ class Operations():
         if filter_small_bins: muts, occs = es.filter_small_bins_dict(muts, occs)
         self.muts_dict_CpGfiltered, self.occ_dict_CpGfiltered = es.filter_low_both_cats(muts, occs,
                                                                                         self.cpg_remove_percentage,
+                                                                                        self.cpgs, self.non_cpg_pool)
+    def filter_random(self, filter_small_bins,remove_percentage):
+        muts = deepcopy(self.muts_dict_raw); occs = deepcopy(self.occ_dict_raw)
+        if filter_small_bins: muts, occs = es.filter_small_bins_dict(muts, occs)
+        self.muts_dict_CpGfiltered, self.occ_dict_CpGfiltered = es.filter_random_both_cats(muts, occs,
+                                                                                        self.cpg_remove_percentage, remove_percentage,
                                                                                         self.cpgs, self.non_cpg_pool)
 
 

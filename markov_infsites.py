@@ -39,73 +39,73 @@ class MarkovInfSites(Operations):
         guessed_matrix = cupy.copy(inf_sites_guess_cp)
         start = time.time()
         #inner_error = []
+        analyzed=False
         for i in range(max_loop):
-                error_mat, errored_bases = self.get_error(initial_state_cp, guessed_matrix, final_state_cp)
-                error[i] = errored_bases
-                #inner_error.append(float(errored_bases))
+            error_mat, errored_bases = self.get_error(initial_state_cp, guessed_matrix, final_state_cp)
+            error[i] = errored_bases
+            #inner_error.append(float(errored_bases))
 
-                if i == 0: self.export(guessed_matrix, i, error)
+            if i == 0: self.export(guessed_matrix, i, error)
 
-                max_errors, max_error_poss = self.max_errors_and_poss(error_mat)
+            max_errors, max_error_poss = self.max_errors_and_poss(error_mat)
 
-                studied = 0
-                for j, max_error_pos in enumerate(zip(max_error_poss[0], max_error_poss[1])):
+            studied = 0
+            for j, max_error_pos in enumerate(zip(max_error_poss[0], max_error_poss[1])):
 
-                    if max_error_pos[0] == max_error_pos[1]: continue
-                    if guessed_matrix[max_error_pos] == 0: continue
+                if max_error_pos[0] == max_error_pos[1]: continue
+                if guessed_matrix[max_error_pos] == 0: continue
 
 
-                    analyzed = False
-                    studied += 1
-                    if studied > 32: break
+                analyzed = False
+                studied += 1
+                if studied > 32: break
 
-                    for ratio in 1+alpha, 1-alpha:
-                        try_matrix = self.get_try_cpmatrix(guessed_matrix, max_error_pos, ratio)
-                        new_error_cpmat, _ = self.get_error(initial_state_cp, try_matrix, final_state_cp)
-                        new_error_cpmat = cupy.absolute(new_error_cpmat)
-                        if cupy.sum(new_error_cpmat) < cupy.sum(error_mat):
+                for ratio in 1+alpha, 1-alpha:
+                    try_matrix = self.get_try_cpmatrix(guessed_matrix, max_error_pos, ratio)
+                    new_error_cpmat, _ = self.get_error(initial_state_cp, try_matrix, final_state_cp)
+                    new_error_cpmat = cupy.absolute(new_error_cpmat)
+                    if cupy.sum(new_error_cpmat) < cupy.sum(error_mat):
 
-                            guessed_matrix = try_matrix
+                        guessed_matrix = try_matrix
 
-                            best_in_df = guessed_matrix
-                            analyzed = True
-                            break
-                    if analyzed: break
+                        best_in_df = guessed_matrix
+                        analyzed = True
+                        break
+                if analyzed: break
 
-                if not analyzed:
+            if not analyzed:
+                alpha *= 0.5
+                if not self.silent:
+                    self.write_logs(f'\talpha reduced to {alpha}')
+                #inner_error = []
+
+            '''if len(inner_error) > 2:
+
+                delta_current_error = float(abs(inner_error[-1] - inner_error[-2]))
+                delta_previous_error = float(abs(error[-2] - error[i-3]))
+                if delta_previous_error != 0 and (abs(delta_current_error-delta_previous_error)/delta_previous_error<0.75):
                     alpha *= 0.5
-                    if not self.silent:
+                    self.write_logs(f'\talpha reduced to {alpha}')
+                    inner_error = []'''
 
-                        self.write_logs(f'\talpha reduced to {alpha}')
-                    #inner_error = []
+            #if i % 10 == 0: print(f'---{str(i)}--- iterations', end='\r')
+            if i % 20 == 0 and i != 0:
+                self.export(best_in_df, i, error)
+                if not self.silent:
+                    self.write_logs('\n')
+                    self.write_logs(f'\talpah: {alpha}')
 
-                '''if len(inner_error) > 2:
-
-                    delta_current_error = float(abs(inner_error[-1] - inner_error[-2]))
-                    delta_previous_error = float(abs(error[-2] - error[i-3]))
-                    if delta_previous_error != 0 and (abs(delta_current_error-delta_previous_error)/delta_previous_error<0.75):
-                        alpha *= 0.5
-                        self.write_logs(f'\talpha reduced to {alpha}')
-                        inner_error = []'''
-
-                #if i % 10 == 0: print(f'---{str(i)}--- iterations', end='\r')
-                if i % 20 == 0 and i != 0:
-                    self.export(best_in_df, i, error)
-                    if not self.silent:
-                        self.write_logs('\n')
-                        self.write_logs(f'\talpah: {alpha}')
-
-                if alpha < 1e-15 or error[i] <= 0.5:
-                    self.export(best_in_df, i, error)
-                    if not self.silent:
-                        self.write_logs('\tconverged')
-                        self.write_logs(f'\tit took {i} iterations')
-                    break
-                if i == max_loop-1:
-                    self.export(best_in_df, i, error)
-                    if not self.silent:
-                        self.write_logs('\tmax loop reached')
-                        self.write_logs(f'\tit took {i} iterations')
+            if alpha < 1e-15 or error[i] <= 0.5:
+                self.export(best_in_df, i, error)
+                if not self.silent:
+                    self.write_logs('\tconverged')
+                    self.write_logs(f'\tit took {i} iterations')
+                break
+            if i == max_loop-1:
+                self.export(best_in_df, i, error)
+                if not self.silent:
+                    self.write_logs('\tmax loop reached')
+                    self.write_logs(f'\tit took {i} iterations')
 
         #print('**************')
         #print(time.time()-start)
@@ -115,7 +115,7 @@ class MarkovInfSites(Operations):
         return best_in_df_pd
 
     def get_cupy_matrices(self, initial_state:pd.Series, final_state:pd.DataFrame, inf_sites_guess:pd.DataFrame):
-        inf_sites_guess_extended = pd.DataFrame(0, index=initial_state.index, columns=initial_state.index)
+        inf_sites_guess_extended = pd.DataFrame(0.0, index=initial_state.index, columns=initial_state.index)
         self.contexts = list(final_state.index)
         min_mut = 1.0
         for base in inf_sites_guess.columns:
@@ -208,7 +208,7 @@ class MarkovInfSites(Operations):
         muts = [es.mutation(label=m) for m in series.index]
         labels = sorted(set(m.tri for m in muts))
         columns = sorted(set(m.base for m in muts))
-        matrix = pd.DataFrame(0, index=labels, columns=columns)
+        matrix = pd.DataFrame(0.0, index=labels, columns=columns)
 
         for mutation in muts:
             matrix.loc[mutation.tri, mutation.base] = series[mutation.label]

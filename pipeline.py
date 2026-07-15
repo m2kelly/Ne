@@ -1,16 +1,34 @@
+from copy import deepcopy
+
 import numpy as np
 from .pop_size import PopSizeCalculator
 from .base_operations import Operations
-from .best_smoothing import BestSmoothing
-from .best_non_cpg_candidates import BestNonCpGCandidates
+from .best_non_cpg_candidates import BestNonCpGCandidatesBeam
+from .regress_subs import RegressSubs
 from .recurrence_vectors import ReccurenceVectors
 from . import essentials as es
-from .noncpgs import get_h_non_cpgs_and_l_non_cpgs
 import os
 import shutil
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from scipy.ndimage import gaussian_filter1d
+import pandas as pd
+
+'''
+creating a simplified pipeline
+remove bins where occ<100k
+pick best non cpg categories using beam search
 
 
-class Pipeline(BestSmoothing, BestNonCpGCandidates, ReccurenceVectors, Operations):
+remove least mutable bins, randommly choosing cppg vs non cpg
+1 remove cpg bins based on rank of cpg vs non cpg mutability 
+
+bin remaining bins into 20 bins
+calculate reucrrence vectors from 20 bins
+find N by regresing cpg vs no cpg recurrence vectors
+'''
+
+class Pipeline(Operations):
 
     def __init__(self, name, directory, cpgs=None, non_cpg_pool=None, smoothing_range=None, collapse=True, generations=None ,operations=None):
 
@@ -18,6 +36,13 @@ class Pipeline(BestSmoothing, BestNonCpGCandidates, ReccurenceVectors, Operation
 
         self.cpgs = cpgs
         self.non_cpg_pool = non_cpg_pool
+        all_cpgs = es.mutation.get_cpg_muts()
+        self.cpg_muts = [x for x in all_cpgs if str(x) in self.occ_dict_raw['chr1'].index]
+        
+        #TESTING WITH ONE CATEORY
+        self.cpg_muts=[self.cpg_muts[0]]
+        self.cpgs=self.cpg_muts
+        
         self.smoothing_range = smoothing_range
         self.best_window = None
         self.best_candidates = None
@@ -28,250 +53,281 @@ class Pipeline(BestSmoothing, BestNonCpGCandidates, ReccurenceVectors, Operation
         self.non_cpg_subs_bckwrds = None
 
         self.generations = generations
-
+        self.cutoff = 0.8
         self.clear_logs()
 
-    def get_best_smoothing_window(self):
-        self.write_logs('Getting best smoothing window')
+    
+    
+    def bin_vectors(self,beam,bins=5):
+        filtered_indices_ordered=beam.filter_dicts_low_mut_rank(self.occ_dict_raw,self.muts_dict_raw,non_cpg_labels=self.best_candidates,cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff)
+        
+        #filtered_indices_ordered=beam.filter_dicts_low_mut_ints_ranks(self.occ_dict_raw,self.muts_dict_raw,non_cpg_labels=self.best_candidates,remove_low=self.cpg_remove_percentage,cutoff=self.cutoff)
+        
+        #to remove using 2d gaussian filter
+        #filtered_indices_ordered=beam.filter_dicts_2d_gaussian(self.occ_dict_raw,self.muts_dict_raw,cpg_labels=[str(x) for x in self.cpg_muts],non_cpg_labels=self.best_candidates,cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff)
 
-        BestSmoothing.__init__(self, name=self.name, directory=self.directory, cpgs=self.cpgs,
-                               smoothing_range=self.smoothing_range, collapse=self.collapse,
-                               muts_dict_raw=self.muts_dict_raw, occ_dict_raw=self.occ_dict_raw,
-                               cpg_remove_percentage=self.cpg_remove_percentage, prefix=self.prefix,
-                               operations=self)
+        indices = np.array_split(filtered_indices_ordered, bins)
 
-        BestSmoothing.get_best_smoothing_window(self)
-        self.write_logs(f'Best smoothing window:{self.best_window}')
+        return indices
+       
+   
+    
+    def run_search_test(self,cutoff):
+        #test categories
+        if self.non_cpg_pool is None:
+            self.non_cpg_pool = es.get_general_non_cpg_pool()
 
-    def get_best_non_cpg_candidates(self):
-        if self.best_window is None:
-            self.get_best_smoothing_window()
-        self.write_logs('Getting best non cpg candidates')
+        for x in np.arange(0,0.75,0.05):
+            print(x)
+            cpg_remove_percentage=x
+            self.prefix='test_regression_with_intcp/'+str(x) + '/'
+            try: os.makedirs(self.prefix)
+            except FileExistsError: pass
 
-        BestNonCpGCandidates.__init__(self, name=self.name, directory=self.directory,
-                                      best_smoothing=self.best_window,
-                                      cpgs=self.cpgs, non_cpg_pool=self.non_cpg_pool,
-                                      collapse=self.collapse,
-                                      muts_dict_raw=self.muts_dict_raw,
-                                      occ_dict_raw=self.occ_dict_raw,
-                                      cpg_remove_percentage=self.cpg_remove_percentage,
-                                      prefix=self.prefix, operations=self)
-        best_candidates = BestNonCpGCandidates.get_best_candidates(self)
-        self.best_candidates = best_candidates
-        return best_candidates
 
-    def get_recurrence_vectors(self):
-        if self.best_candidates is None:
-            self.best_candidates = self.get_best_non_cpg_candidates()
-        self.write_logs('Getting recurrence vectors')
+            beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
+                                                best_smoothing=1,
+                                                cpgs=self.cpgs, non_cpg_pool=self.non_cpg_pool,
+                                                collapse=self.collapse,
+                                                muts_dict_raw=self.muts_dict_raw,
+                                                occ_dict_raw=self.occ_dict_raw,
+                                                cpg_remove_percentage=cpg_remove_percentage,cutoff=cutoff,
+                                                prefix=self.prefix, operations=self)
+            if not self.best_candidates: 
+            #choose by beam search
+                
+                best_candidates = beam.get_best_candidates()
+                self.non_cpg_muts = best_candidates
+                self.best_candidates = [str(x) for x in best_candidates]
 
-        ReccurenceVectors.__init__(self, self.name, self.directory,
-                                   best_smoothing=self.best_window,
-                                   non_cpgs=self.best_candidates, cpgs=self.cpgs,
-                                   collapse=self.collapse,
-                                   muts_dict_raw=self.muts_dict_raw,
-                                   occ_dict_raw=self.occ_dict_raw,
-                                   cpg_remove_percentage=self.cpg_remove_percentage,
-                                   generations=self.generations,
-                                   prefix=self.prefix,
-                                   operations=self)
+            else:
+                self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates] #mut objects for best candidates,used in recc vectors
+            self.write_logs(f'Best non cpg candidates: {self.best_candidates}')
+            self.indices=self.bin_vectors(beam,bins=50)
+            self.plot_bins()
+            self.best_candidates=None #reset for next round, to choose by beam search again
 
-        c, nc, cb, ncb = ReccurenceVectors.get_recurrence_vectors(self)
-        self.cpg_subs = c; self.non_cpg_subs = nc
-        self.cpg_subs_bckwrds = cb; self.non_cpg_subs_bckwrds = ncb
-        self.write_logs(f'cpg_subs:{c}\nnon_cpg_subs:{nc}\ncpg_subs_bckwrds:{cb}\nnon_cpg_subs_bckwrds:{ncb}')
-        return c, nc, cb, ncb
+    def plot_raw_rates(self):
+        muts_vector=es.rename_cols(self.muts_dict_raw)
+        occ_vector=es.rename_cols(self.occ_dict_raw)
+        
+        cpg_labels=[str(x) for x in self.cpg_muts]
+        non_cpg_labels=[str(x) for x in muts_vector.index if str(x) not in cpg_labels] #as collapse trinucs
+        cpg_muts = muts_vector.loc[cpg_labels].sum()
+        cpg_occs_copy = occ_vector.loc[cpg_labels].sum()
 
-    def get_best_pop(self):
-        if self.cpg_subs is None or self.non_cpg_subs is None or \
-        self.cpg_subs_bckwrds is None or self.non_cpg_subs_bckwrds is None:
-            self.write_logs('recurrence vectors not calculated')
-            self.get_recurrence_vectors()
-        self.write_logs('Calculating best population size')
+        non_cpg_muts = muts_vector.loc[non_cpg_labels].sum()
+        non_cpg_occs_copy = occ_vector.loc[non_cpg_labels].sum()
+        #remove nans for plotting
+        cpg_rate = cpg_muts / cpg_occs_copy
+        non_cpg_rate = non_cpg_muts / non_cpg_occs_copy
+        mask =  cpg_rate.notna() & non_cpg_rate.notna()
+        cpg_rate = cpg_rate.loc[mask]
+        non_cpg_rate = non_cpg_rate.loc[mask]
+        plt.clf()
+        plt.title('CpG vs non CpG raw rates')
+        #plt.hist2d
+        plt.hexbin(np.array(non_cpg_rate).flatten(), np.array(cpg_rate).flatten(), bins=300)
+        plt.xlabel('Non-CpG subs, raw')
+        plt.ylabel('CpG subs, raw')
+        plt.colorbar(label='mut rate in bin frequency')
+        
+        plt.savefig(f'raw_rates_hist2d.png')
 
-        popcalc = PopSizeCalculator(gens=self.generations, cpg_subs=self.cpg_subs,
-                         non_cpg_subs=self.non_cpg_subs, cpg_subs_bckwrds=self.cpg_subs_bckwrds,
-                         non_cpg_subs_bckwrds=self.non_cpg_subs_bckwrds,
-                         directory=self.prefix, operations=self)
-        popcalc.calc_best_pop()
-        self.write_logs(f'Best population size:{popcalc.best_pop}')
-        popcalc.plot_correction()
-        popcalc.plot_error_points()
-        self.write_logs(f'pop_error values:{popcalc.computed_points}')
 
-        return popcalc.best_pop, popcalc.min_error
+    def plot_bins(self):
+        #plot binned rates
+        #testing smoothing!!!
+        muts_vector=es.rename_cols(self.muts_dict_raw)
+        occ_vector=es.rename_cols(self.occ_dict_raw)
+        cpg=[]
+        non_cpg=[]
+        cpg_labels=[str(x) for x in self.cpg_muts]
+        non_cpg_labels=self.best_candidates
 
-    def run_with_exports(self, CpG_remove_percentage=0, continue_remove=False, filterboth=False, remove_step=0.05, filter_small_bins=False):
+        cpg_muts = muts_vector.loc[cpg_labels].sum()/self.generations
+        cpg_occs_copy = occ_vector.loc[cpg_labels].sum()
 
-        analysed = False
+        non_cpg_muts = muts_vector.loc[non_cpg_labels].sum()/self.generations
+        non_cpg_occs_copy = occ_vector.loc[non_cpg_labels].sum()
+        
+        #all indices, to plot raw rates
+        filt_indices=list(self.indices[0])
+        for indices in self.indices[1:]:
+            filt_indices.extend(list(indices))
+
+        #plt raw rates
+        x=np.array(non_cpg_muts.loc[filt_indices]/non_cpg_occs_copy.loc[filt_indices]).reshape(-1,1)
+        y=np.array(cpg_muts.loc[filt_indices]/cpg_occs_copy.loc[filt_indices])
+
+
+        
+        model=LinearRegression(fit_intercept=False)
+        model.fit(x,y)
+        y_pred=model.predict(x)
+        plt.clf()
+        plt.plot(x, y_pred, color='red', linewidth=2,label=f'R^2={model.score(x,y):.2f},coef={model.coef_[0]:.2f}')
+        plt.scatter(x,y,alpha=0.1)
+        plt.ylabel('CpG subs, before recurrence correction')
+        plt.xlabel('Non-CpG subs, before recurrence correction')
+        plt.legend()
+        plt.savefig(f'{self.prefix}/raw_rates.png')
+        
+        for bin in self.indices:
+            cpg.append(cpg_muts.loc[bin].sum()/cpg_occs_copy.loc[bin].sum())
+            non_cpg.append(non_cpg_muts.loc[bin].sum()/non_cpg_occs_copy.loc[bin].sum())
+        
+        #linear regress
+        x=np.array(non_cpg).reshape(-1,1)
+        y=np.array(cpg)
+        model=LinearRegression(fit_intercept=False)
+        model.fit(x,y)
+        y_pred=model.predict(x)
+        plt.clf()
+        plt.plot(x, y_pred, color='red', linewidth=2,label=f'R^2={model.score(x,y):.2f},coef={model.coef_[0]:.2f}')
+        plt.scatter(x,y)
+        plt.ylabel('CpG subs, before recurrence correction')
+        plt.xlabel('Non-CpG subs, before recurrence correction')
+        plt.legend()
+        plt.savefig(f'{self.prefix}/binned_rates.png')
+        
+    @staticmethod
+    def gaussian_smooth_series(s: pd.Series, sigma=1, mode="nearest") -> pd.Series:
+        #‘nearest’ (a a a a | a b c d | d d d d)
+        #The input is extended by replicating the last pixel
+        # bins used =2*radius + 1
+        return pd.Series(
+            gaussian_filter1d(s.astype(float).to_numpy(), sigma=sigma, mode=mode,radius=4),
+            index=s.index,
+            name=s.name,
+        )        
+   
+    def smooth_dict(self,dict):
+        smoothed_dict={}
+        for chr,df in dict.items():
+            smoothed_dict[chr] = df.apply(self.gaussian_smooth_series,axis=1)
+        return smoothed_dict
+
+
+    def run_pipeline(self,CpG_remove_percentage=0.0,cutoff=0.8):
+    
+        self.plot_raw_rates()
+        self.cutoff=cutoff
+        
+
         if self.non_cpg_pool is None:
             self.non_cpg_pool = es.get_general_non_cpg_pool()
 
         while CpG_remove_percentage<=0.75:
-            try:
-                directory = f'cpg_remove_percentage_{CpG_remove_percentage}/'
-                self.prefix = directory
-                try: os.mkdir(directory)
-                except FileExistsError: pass
-
-                self.cpg_remove_percentage = CpG_remove_percentage
-                if not filterboth: self.filter_low_mut_CpGs()
-                else: self.filter_low_both(filter_small_bins)
-                self.get_best_smoothing_window()
-                self.plot_smoothing_range().savefig(f'{self.prefix}smoothing_range_plot.png')
-                self.plot_smoothing_diff().savefig(f'{self.prefix}smoothing_diff_plot.png')
-                self.plot_max_corr_heatmap().savefig(f'{self.prefix}max_corr_heatmap.png')
-                self.get_best_non_cpg_candidates()
-                self.get_recurrence_vectors()
-                best_pop, min_error = self.get_best_pop()
-                self.write_logs(f'best pop:{best_pop}, min error:{min_error}')
-                #copy logs to output directory
-                shutil.copy(self.logs_f, f'{self.prefix}/{self.logs_f}')
-                analysed = True
-                if not continue_remove: break
-
-                CpG_remove_percentage += remove_step
-                self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-
-            except ValueError as e:
-                if str(e) == 'No best static percentile found':
-                    CpG_remove_percentage += remove_step
-                    self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-                else: raise e
-        if not analysed:
-            self.write_logs('No best static percentile found for any CpG remove percentage')
-
-        return
-
-    def run_until_min_error(self, CpG_remove_percentage=0, zero_back=False, step=0.05):
-
-        analysed = False
-        min_error_reached = np.inf; best_pop_computed = None; best_remove_perc = None
-        if self.non_cpg_pool is None:
-            self.non_cpg_pool = es.get_general_non_cpg_pool()
-        while CpG_remove_percentage<=0.75:
-            try:
-                directory = f'cpg_remove_percentage_{CpG_remove_percentage}/'
-                self.prefix = directory
-                try: os.mkdir(directory)
-                except FileExistsError: pass
-
-                self.cpg_remove_percentage = CpG_remove_percentage
-                self.filter_low_both(True)
-                self.get_best_smoothing_window()
-                self.plot_smoothing_range().savefig(f'{self.prefix}smoothing_range_plot.png')
-                self.plot_smoothing_diff().savefig(f'{self.prefix}smoothing_diff_plot.png')
-                self.plot_max_corr_heatmap().savefig(f'{self.prefix}max_corr_heatmap.png')
-                self.get_best_non_cpg_candidates()
-                self.get_recurrence_vectors()
-                if zero_back:
-                    self.cpg_subs_bckwrds = [0]*len(self.cpg_subs)
-                    self.non_cpg_subs_bckwrds = [0]*len(self.non_cpg_subs)
-                best_pop, min_error = self.get_best_pop()
-                #copy logs to output directory
-                shutil.copy(self.logs_f, f'{self.prefix}/{self.logs_f}')
-                analysed = True
-                if min_error < min_error_reached:
-                    min_error_reached = min_error
-                    best_pop_computed = best_pop
-                    best_remove_perc = CpG_remove_percentage
-                    self.write_logs(f'new min error reached:{min_error_reached}')
-                    CpG_remove_percentage += step
-                    self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-
-                elif min_error < min_error_reached*3:
-                    self.write_logs(f'no new min error reached, but error in range')
-                    CpG_remove_percentage += step
-                    self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-                else:
-                    self.write_logs(f'no new min error reached')
-                    self.write_logs(f'best pop:{best_pop_computed}, min error:{min_error_reached}, best remove%: {best_remove_perc}')
-                    CpG_remove_percentage += step
-                    break
-
-            except ValueError as e:
-                if str(e) == 'No best static percentile found':
-                    if analysed ==True: return
-                    CpG_remove_percentage += step
-                    self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-                else: raise e
-        if not analysed:
-            self.write_logs('No best static percentile found for any CpG remove percentage')
-
-        return
-
-    def run_non_cpg_pipeline(self):
-        self.write_logs('Running non cpg pipeline')
-        cpgs, non_cpgs = get_h_non_cpgs_and_l_non_cpgs(self.muts_dict_raw, self.occ_dict_raw)
-        self.write_logs(f'h_monos:{cpgs}\nl_monos:{non_cpgs}')
-        self.cpgs = cpgs
-        self.non_cpg_pool = non_cpgs
-        self.run_with_exports()
-
-    def run_mono_nuc_pipeline(self, ignored_pairs=[], skip_cpgs=True, len_h=None, len_l=None, CpG_remove_percentage=0, function=None, **kwargs):
-        self.write_logs('Running mono nuc pipeline')
-        if function is None: function = self.run_with_exports
-        if ignored_pairs: self.write_logs(f'Ignoring pairs:{ignored_pairs}')
-        cpgs, non_cpgs = self.get_h_mono_and_l_mono(ignored_pairs=ignored_pairs, skip_cpgs=skip_cpgs,
-                                                    len_h=len_h, len_l=len_l)
-
-        self.cpgs = cpgs
-        self.non_cpg_pool = non_cpgs
-        function(CpG_remove_percentage=CpG_remove_percentage, **kwargs)
-
-    def run_test_pipeline(self):
-
-        CpG_remove_percentage = 0
-
-        while CpG_remove_percentage<0.6:
-            try:
-                directory = f'cpg_remove_percentage_{CpG_remove_percentage}/'
-                self.prefix = directory
-                try: os.mkdir(directory)
-                except FileExistsError: pass
-
-                self.cpg_remove_percentage = CpG_remove_percentage
-                self.filter_low_mut_CpGs()
-                #self.get_best_smoothing_window()
-                #self.plot_smoothing_range().savefig(f'{self.prefix}smoothing_range_plot.png')
-                #self.plot_smoothing_diff().savefig(f'{self.prefix}smoothing_diff_plot.png')
-                #self.plot_max_corr_heatmap().savefig(f'{self.prefix}max_corr_heatmap.png')
-                self.best_window = 5
-                #self.get_best_non_cpg_candidates()
-                self.best_candidates = [es.mutation(label=l) for l in ['CTG->A','ATT->A','CTT->A','TTT->A','TTA->A','CTC->A','CTA->A','GTT->A','TTG->A','GTG->A','GTA->A','TTC->A','GTC->A','ATC->G']]
-                self.get_recurrence_vectors()
-                self.get_best_pop()
-                exit()
-            except ValueError as e:
-                if str(e) == 'No best static percentile found':
-                    CpG_remove_percentage += 0.05
-                    self.write_logs(f'increasing CpG remove percentage to {CpG_remove_percentage}')
-                else: raise e
-
-        self.write_logs('No best static percentile found for any CpG remove percentage')
-
-    def bootstrap(self, CpG_remove_percentage, replicates=100, smoothing_window=None, best_candidates=None):
-
-        analysed = False
-        if self.non_cpg_pool is None:
-            self.non_cpg_pool = es.get_general_non_cpg_pool()
-
+        
+            self.write_logs(f'Running pipeline with CpG remove percentage: {CpG_remove_percentage}')
             directory = f'cpg_remove_percentage_{CpG_remove_percentage}/'
-
             self.prefix = directory
             try: os.mkdir(directory)
             except FileExistsError: pass
-
+            #try:
             self.cpg_remove_percentage = CpG_remove_percentage
-            self.filter_low_both(True)
-            self.best_window = smoothing_window
-            self.best_candidates = best_candidates
-            self.smooth_dics()
+            self.write_logs('Getting best non cpg candidates')
+            #choosing candidates by linear regression of each non cpg with cpg pooled
+            
+            #TRIALS step 1 smooth bins
+            #self.muts_dict_raw=self.smooth_dict(self.muts_dict_raw)
+            #self.occ_dict_raw=self.smooth_dict(self.occ_dict_raw)
 
-            for i in range(replicates):
-                self.bootstrap_filter()
-                self.get_recurrence_vectors()
-                best_pop, min_error = self.get_best_pop()
-                self.write_logs(f'best pop:{best_pop}, min error:{min_error}')
-                #copy logs to output directory
-                shutil.copy(self.logs_f, f'{self.prefix}/{self.logs_f}')
+            beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
+                                        best_smoothing=1,
+                                        cpgs=self.cpgs, non_cpg_pool=self.non_cpg_pool,
+                                        collapse=self.collapse,
+                                        muts_dict_raw=self.muts_dict_raw,
+                                        occ_dict_raw=self.occ_dict_raw,
+                                        cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff,
+                                        prefix=self.prefix, operations=self)
+            
+            
+            
+            
+            if not self.best_candidates: 
+            #choose by beam search
+                self.cpg_non_cpg_dict={}
+                for cpg_mut in self.cpg_muts:
+                    beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
+                                        best_smoothing=1,
+                                        cpgs=[cpg_mut], non_cpg_pool=self.non_cpg_pool,
+                                        collapse=self.collapse,
+                                        muts_dict_raw=self.muts_dict_raw,
+                                        occ_dict_raw=self.occ_dict_raw,
+                                        cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff,
+                                        prefix=self.prefix, operations=self)
+            
+                    best_candidate = beam.get_best_candidates()
+                    self.cpg_non_cpg_dict[cpg_mut]=best_candidate
+                self.non_cpg_muts=[x for x in self.cpg_non_cpg_dict.values()]
+                print(f'best candidates: {self.best_candidates}')
+                self.best_candidates=[str(x) for x in self.non_cpg_muts]
+
+            else:
+                self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates.values()] #mut objects for best candidates,used in recc vectors
+            self.write_logs(f'cpg candidates {self.cpg_muts}')
+            self.write_logs(f'Best non cpg candidates: {self.best_candidates}')
+        
+        
+            
+            self.write_logs('filtering and binning')
+            #self.indices=self.bin_and_plot(cpg_remove=self.cpg_remove_percentage,cutoff=self.cutoff,non_cpg_labels=self.best_candidates)
+            self.indices=self.bin_vectors(beam,bins=50)
+            
+            for bin in self.indices:
+                print(len(bin))
+            self.plot_bins()
+            
+            
+            #iniices is a list of lists of indicies for each bin
+            #based on orginial occ dict raw indicies
+
+            self.write_logs('running recurrence vectors')
+            #do instance of recurrence vector here, setting noncpg?? 
+            
+            
+            reccur=ReccurenceVectors(self.name, self.directory,
+                                indices=self.indices,
+                                non_cpgs=self.non_cpg_muts, cpgs=self.cpgs,
+                                collapse=self.collapse,
+                                muts_dict_raw=self.muts_dict_raw,
+                                occ_dict_raw=self.occ_dict_raw,
+                                cpg_remove_percentage=self.cpg_remove_percentage,
+                                generations=self.generations,
+                                prefix=self.prefix,
+                                operations=self)
+
+            #editted so c, nc etc are now dictionaries with lists of rates per 4 mut categories
+            rates_dict, occs_dict  = reccur.get_mrkv_corrected_vctrs()
+
+        
+            self.write_logs('recurrence vectors calculated')
+            cpg_subs={key:value for key,value in rates_dict.items() if key in self.cpgs}
+            non_cpg_subs={key:value for key,value in rates_dict.items() if key in self.non_cpg_muts}
+
+            self.write_logs('running regressions to find N')
+            popcalc = PopSizeCalculator(gens=self.generations, cpg_subs=cpg_subs,
+                            non_cpg_subs=non_cpg_subs, cpg_subs_bckwrds=[],
+                            non_cpg_subs_bckwrds=[],
+                            cpg_occs=[],
+                            non_cpg_occs=[], cpg_occs_bckwrds=[],
+                            non_cpg_occs_bckwrds=[],
+                            directory=self.prefix, operations=self)
+            popcalc.cpg_non_cpg_dict=self.cpg_non_cpg_dict
+            popcalc.rates_dict=rates_dict
+            popcalc.calc_best_pop_regress_per_category()
+            popcalc.plot_correction()
+            self.write_logs(f'best pop:{popcalc.best_pop}, min error:{popcalc.min_error}')
+            
+            CpG_remove_percentage+=0.05
+            self.best_candidates=None #reset for next round, to choose by beam search again
+            
+            '''
+            except:
+                self.write_logs(f'Error at CpG remove percentage: {CpG_remove_percentage}')
+                CpG_remove_percentage+=0.05
+                self.best_candidates=None #reset for next round, to choose by beam search again
+            '''
+        

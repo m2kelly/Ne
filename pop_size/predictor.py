@@ -10,9 +10,15 @@ import numpy as np
 from scipy.optimize import curve_fit
 import warnings
 import pkgutil
+
+#maria add ons 
+from scipy.optimize import root_scalar
+from scipy.optimize import root
+from scipy.special import betainc,beta
 warnings.filterwarnings("ignore")
 
-wfes_single = '/home/weghorn/hali/wfes2/bin/wfes_single'
+BASES=["A", "C", "G", "T"]
+wfes_single = '/home/dweghorngroup/packages/wfes2/bin/wfes_single'
 e = lambda x: math.exp(x)
 log10 = lambda x: np.log10(x) if x > 0 else 0
 
@@ -122,7 +128,12 @@ class Predictor():
             return self.get_sub_rate_exact(point)
         else:
             try:
-                return self.get_sub_rate_diffusion(point)
+                if point.selection_coeff==0:
+                    return self.get_sub_rate_diffusion_4_allele_renewal(point) #4 allele model
+                    #return self.get_sub_rate_diffusion_beta(point) #2allele model
+                else:
+                    #return self.get_sub_rate_diffusion(point)
+                    return self.get_sub_rate_diffusion_4_allele_renewal(point)
             except Exception as e:
                 return np.inf
 
@@ -187,62 +198,230 @@ class Predictor():
             value = subl + (point.selection_coeff - lower)*(subh-subl)/(upper-lower)
 
             return 10**value
+        
+    def get_mu(self, point,sub_matrix,a,b,return_matrix=False):
+        """
+        solve for mu_a_b simultaneously for a,b in [A,C,G,T]
+        calculating from 4 allele diffusion sub rate
+        mu matrix is a dict of dicts with keys A,C,G,T and values the mutation rates
 
-    def get_mu(self, point, ratio=0, **kwargs):
+        """
+        def matrix_to_vector(matrix,index_list=False):
+            """
+            Convert 4x4 dict-of-dicts to 12-vector of off-diagonal entries.
+            Order is:
+                A->C, A->G, A->T,
+                C->A, C->G, C->T,
+                G->A, G->C, G->T,
+                T->A, T->C, T->G
+            """
+            out = []
+            indexs=[]
+            for a in BASES:
+                for b in BASES:
+                    if a == b:
+                        continue
+                    out.append(matrix[a][b])
+                    indexs.append((a, b))
+            if index_list:
+                return np.array(out, dtype=float), indexs
+            else:
+                return np.array(out, dtype=float)
 
-        def inner_func(mu):
+        def vector_to_matrix(vec):
+            """
+            Convert 12-vector back to 4x4 dict-of-dicts.
+            Diagonal entries are set to 0.
+            """
+            matrix = {
+                a: {b: 0.0 for b in BASES}
+                for a in BASES
+            }
+
+            i = 0
+            for a in BASES:
+                for b in BASES:
+                    if a == b:
+                        continue
+
+                    matrix[a][b] = vec[i]
+                    i += 1
+
+            return matrix
+
+        # ------------------------------------------------------------
+        # 1. Construct the system of equations
+        # ------------------------------------------------------------
+        def system(mu_guess_vector, sub_vector):
+            
+            if (mu_guess_vector <= 0).any() or (mu_guess_vector > 1).any():
+                return np.array([1e20]*12)
+            try:
+                #convert mu_guess to mu_matrix
+                # enforce physical domain
+                mu_matrix = vector_to_matrix(mu_guess_vector)
+                sub_matrix_from_guesss=self.get_sub_rate_diffusion_4_allele_renewal(point, mu_matrix)
+                sub_vector_guess=matrix_to_vector(sub_matrix_from_guesss)
+                #return errors from each combo
+                return sub_vector_guess - sub_vector
+
+            except Exception:
+                return np.array([1e20]*12)
+            
+        sub_vector,index_list=matrix_to_vector(sub_matrix,index_list=True)
+        x0=sub_vector #initital guess is sub rate = mu rate
+        sol = root(system, x0,  args=(sub_vector,),method='hybr')
+        
+        if return_matrix:
+            return vector_to_matrix(sol.x)
+        #extract number of mutation from a->b given the order of the vector
+        else:
+            idx=index_list.index((a, b))
+            return sol.x[idx]
+
+
+
+    def get_mu_2_allele(self, point):
+        """
+        Solve for (mu_f, mu_b) simultaneously by matching the observed 
+        forward and backward substitution rates using a robust expanding 
+        global search.
+
+        This replaces brittle 1-D root finding and works even when the
+        substitution function is undefined or non-monotonic.
+        """
+
+        # ------------------------------------------------------------
+        # 1. Construct the system of equations
+        # ------------------------------------------------------------
+        def system(mu_vec):
+            mu_f,mu_b = mu_vec
+            """Return F1, F2 = (subf - obsf), (subb - obsb)."""
+            try:
+                gpf = GPA(mu_f, mu_b, 
+                         pop_size=point.pop_size,
+                         mean_sub_rate=None,
+                         selection_coeff=point.selection_coeff)
+                subf = self.get_sub_rate(gpf)
+                gpb = GPA(mu_b, mu_f, 
+                         pop_size=point.pop_size,
+                         mean_sub_rate=None,
+                         selection_coeff=point.selection_coeff)
+                subb = self.get_sub_rate(gpb)
+
+                return subf - point.mean_sub_rate, subb - point.mue_bckwrds
+            
+
+            except Exception:
+                return np.inf, np.inf
+            
+        def system(mu_vec):
+            mu_f, mu_b = mu_vec
+
+            # enforce physical domain
+            if mu_f <= 0 or mu_b <= 0 or mu_f > 1 or mu_b > 1:
+                return np.array([1e20, 1e20])
+
+            try:
+                gpf = GPA(mu_f, mu_b,
+                        pop_size=point.pop_size,
+                        selection_coeff=point.selection_coeff)
+
+                gpb = GPA(mu_b, mu_f,
+                        pop_size=point.pop_size,
+                        selection_coeff=point.selection_coeff)
+
+                subf = self.get_sub_rate(gpf)
+                subb = self.get_sub_rate(gpb)
+
+                if not (np.isfinite(subf) and np.isfinite(subb)):
+                    return np.array([1e20, 1e20])
+
+                return np.array([
+                    subf - point.mean_sub_rate,
+                    subb - point.mue_bckwrds
+                ])
+
+            except Exception:
+                return np.array([1e20, 1e20])
+        x0=(point.mean_sub_rate, point.mue_bckwrds)
+        sol = root(system, x0, method='hybr')
+        
+        return sol.x[0]
+
+
+
+    #current best function fot get mu solving only for muforward-ass hossams
+    def get_mu_scalar(self, point, ratio=0, **kwargs):
+        """
+        Robustly estimate forward mutation rate (mu) for a given point by matching
+        the expected substitution rate. Uses root_scalar instead of binary search
+        to handle non-monotonic cases.
+        """
+        def expected_rate(mu):
             if ratio == 0 and point.mue_bckwrds is not None:
                 mu_b = point.mue_bckwrds
             else:
-                mu_b = mu/ratio
-            return self.get_sub_rate(GPA(mu, mu_b, pop_size=point.pop_size,
-                                        selection_coeff=point.selection_coeff))
+                mu_b = mu / ratio if ratio != 0 else mu
 
-        #@np.vectorize
-        def error(mu, approx=True):
-            if ratio == 0 and point.mue_bckwrds is not None:
-                mu_b = point.mue_bckwrds
+            try:
+                rate = self.get_sub_rate(
+                    GPA(mu, mu_b, pop_size=point.pop_size, selection_coeff=point.selection_coeff)
+                )
+                return rate if np.isfinite(rate) else np.inf
+            except Exception:
+                print(Exception)
+                return np.inf
+
+        # Define function for root finding: difference between expected and observed substitution rate
+        def func(mu):
+            return expected_rate(mu) - point.mean_sub_rate
+
+        # Define search interval
+        l_boundary = point.mean_sub_rate *1.01
+        r_boundary = point.mean_sub_rate * 0.99
+
+        # Check function values at bounds
+        f_left = func(l_boundary)
+        f_right = func(r_boundary)
+
+        # If no sign change (bad bracket), expand automatically
+        
+        
+        if np.sign(f_left) == np.sign(f_right) or not np.isfinite(f_left) or not np.isfinite(f_right):
+            #print(f"[get_mu] Expanding search range for pop={point.pop_size}, sel={point.selection_coeff}")
+            for scale in [1.5,1e2, 1e4, 1e6]:
+                l_new = point.mean_sub_rate / scale
+                r_new = point.mean_sub_rate * scale
+                f_left, f_right = func(l_new), func(r_new)
+                print(f_left, f_right)
+                if np.sign(f_left) != np.sign(f_right):
+                    l_boundary, r_boundary = l_new, r_new
+                    break
             else:
-                mu_b = mu/ratio
+                raise Exception("[get_mu] Could not bracket root (function may be monotonic or invalid)")
 
-            if approx:
-                expected_sub_rate = self.get_sub_rate(GPA(mu, mu_b, pop_size=point.pop_size,
-                                                        selection_coeff=point.selection_coeff))
-            else:
-                expected_sub_rate = self.get_sub_rate_diffusion(GPA(mu, mu_b, pop_size=point.pop_size,
-                                                          selection_coeff=point.selection_coeff))
-
-            if expected_sub_rate is None: return np.inf
-            '''if log10(expected_sub_rate / sub_rate) < -100:
-                bla = 1'''
-            e = abs(expected_sub_rate - point.mean_sub_rate)
-            #e = np.log10(expected_sub_rate) / np.log10(point.mean_sub_rate)
-            #e = abs(1-e)
-            #if e == 1: return np.inf
-            #if np.isnan(e): return np.inf
-            return e
-            #return (self.get_sub_rate(GPA(mu, mu*ratio, pop_size, selection)) - sub_rate)**2
-
-        l_boundary = point.mean_sub_rate/100
-        r_boundary = point.mean_sub_rate*100
-        #res = self.minimize_by_search(error, [l_boundary,r_boundary], negative=False, max_depth=10, **kwargs)
+        # Use robust root finder
         try:
-            res = self.binary_search(inner_func, [l_boundary,r_boundary], point.mean_sub_rate, negative=False, max_depth=40, tol=10**-15, **kwargs)
+            sol = root_scalar(func, bracket=[l_boundary, r_boundary], method='brentq', xtol=1e-12)
+            #checking shape of func
+            #xs = np.linspace(l_boundary, r_boundary, 1000)
+            #plt.scatter(xs, [func(x) for x in xs])
+            #plt.show()
         except Exception as e:
-            #print(e)
-            #print('trying again by grid search')
-            minimize = lambda x: error(x)
-            res, _ys = self.minimize_by_search(minimize, [point.mean_sub_rate/100,point.mean_sub_rate*100], negative=False, max_depth=25, silent=True,
-                                          tol=10**-15, parallel=False, **kwargs)
+            print(f"[get_mu] Root finding failed: {e}")
+            raise Exception("did not converge")
 
-        #res = self.minimize_by_search(error, [res*0.9,res*1.1], negative=False, approx=False, **kwargs)
-        if (error(res)) > 10**-10:
-            if point.pop_size > 1000:
-                print(f'pop: {point.pop_size}, selection: {point.selection_coeff}, error: {error(res)} mu: {res}')
-                print(f'sub_rate: {point.mean_sub_rate}, calculated: {self.get_sub_rate(GPA(res, point.mue_bckwrds, point.pop_size, point.selection_coeff))}')
-                raise Exception('did not converge')
+        mu_est = sol.root
 
-        return res
+        # Sanity check: verify convergence accuracy
+        err = abs(func(mu_est))
+        if err > 1e-6:
+            print(f"[get_mu] Warning: high error ({err}) for pop={point.pop_size}, sel={point.selection_coeff}")
+            raise Exception("did not converge")
+        
+        return mu_est
+     
 
     def get_sub_rate_exact(self, point):
         '''command format: wfes_single --fixation -N [pop_size] -s [selection_coeff] -v [mue_frwrd] -u [mue_bckwrds] -h 0.5
@@ -262,25 +441,656 @@ class Predictor():
             return np.inf
         return 1/(time)
 
-    def get_sub_rate_diffusion(self, point):
-        #warnings.filterwarnings("error")
+    def get_sub_rate_diffusion(self,point):
+        """
+        Compute the substitution rate k for a Wright-Fisher diffusion
+        with selection and two-way mutation.
+        as sub rate = 1/time to fixation in generations
+        assuming mut starts at freq 1/2N and left boundary loss is refexive
 
-        def g_of_x_y(y, sigma, u1, u2):
-            #num = 2*I(lambda x: e(-2*sigma*x)*(x**(-2*u1))*((1-x)**(-2*u2)), y, 1, limit=20, epsabs=1e-3, epsrel=1e-3)[0]
-            num = 2*I(lambda x: e(-2*sigma*x)*(x**(-2*u1))*((1-x)**(-2*u2)), y, 1)[0]
-            #num = 2*II(lambda x: e(-2*sigma*x)*(x**(-2*u1))*((1-x)**(-2*u2)), [y, 1])
-            den = y*(1-y) * e(-2*sigma*y)
-            den *= (y**(-2*u1))*((1-y)**(-2*u2))
-            return num/den
 
+        Parameters
+        ----------
+        N : int
+            Diploid population size.
+        mu_f : float
+            Forward mutation rate.
+        mu_b : float
+            Backward mutation rate.
+        s : float
+            Selection coefficient.
+
+        Returns
+        -------
+        k : float
+            Substitution rate.
+        """
+        # Scaled parameters
+        sigma = 2*point.pop_size*point.selection_coeff
+        u1 = 2*point.mue_frwrd*point.pop_size
+        u2 = 2*point.mue_bckwrds*point.pop_size
+        N=point.pop_size
+        x0=0
+        #x0 = 1/(2*N)
+
+        # Auxiliary function psi
+        def psi(y):
+            # avoid division by zero at boundaries
+            y = np.clip(y, 1e-12, 1-1e-12)
+            return np.exp(-2 * sigma * y) * (y**(-2*u1)) * ((1-y)**(-2*u2))
+
+        # Normalization constant for scale function
+        C, _ = I(psi, 0, 1)
+
+        # Scale function phi -not using as presimplified
+        def phi(x):
+            integral, _ = I(psi, 0, x)
+            return integral / C
+
+        def x_1_psi(x):
+            integral, _ = I(psi, x, 1)
+            return integral
+
+        #no reflection 
+        def g(y):
+            if y < x0:
+                return 2* x_1_psi(x0) / (y * (1 - y) * psi(y))
+            else:
+                return 2* x_1_psi(y) / (y * (1 - y) * psi(y))
+
+        #time to fixation from zero-allowing loss then new muts
+        T_abs_star, _ = I(g, 0, 1)
+        
+        #mut rate = 1/time in generations
+        k=1/(2*N*T_abs_star) 
+        
+
+        return k
+
+    #efficent calc of sub rate when no selection, using beta functions
+    def get_sub_rate_diffusion_beta(self,point):
+        u1 = 2*point.mue_frwrd*point.pop_size
+        u2 = 2*point.mue_bckwrds*point.pop_size
+        N=point.pop_size
+        a = 1 - 2*u1
+        b = 1 - 2*u2
+        B_ab = beta(a, b)
+
+    # integrand for alpha(0) (with 2*B_ab pullled out as constants)
+        def integrand(y):
+            return ((1 - betainc(a, b, y)) *
+                    y**(2*u1 - 1) *
+                    (1 - y)**(2*u2 - 1))
+
+        alpha0, _ = I(integrand, 0, 1, epsabs=1e-8, epsrel=1e-8)
+
+        return 1.0 / (4 * N * B_ab * alpha0)
+    
+    def get_sub_rate_diffusion_4_allele_renewal(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
+        '''
+        was trying to derive by changing mean time to path
+        but understimating, as not account for ossibility from sub to other allele then to sub of interet, also O(mu)'''
+        
+        #cachinh to inc speed
+        if not hasattr(self, "_diffusion_cache"):
+            self._diffusion_cache = {
+                "den": {},
+                "phi": {},
+                "phi_prime": {},
+                "alpha": {},
+                "denominator": {},
+            }
+
+        cache = self._diffusion_cache
+
+        def cache_key(*vals):
+            return tuple(round(float(v), 16) for v in vals)
+
+
+        # inner functions
+        def get_mu(x, y):
+            """
+            Per-generation mutation rate x -> y.
+            
+            """
+            
+            return mu_matrix[x][y]
+
+        def get_s(x):
+            """
+            Allele fitness/selection value.
+            Edit this line if your selection coefficients are stored differently.
+            """
+            if hasattr(point, "selection"):
+                return 
+            return 0.0
+
+        def psi(mu, sigma, u1, u2):
+            """
+            ψ(μ) = exp(-2 σ μ) * μ^{-2u1} * (1-μ)^{-2u2}
+            """
+            # Avoid singularities at endpoints
+            if mu <= 0.0:
+                return 0.0
+            if mu >= 1.0:
+                return 0.0
+
+            return (
+                np.exp(-2.0 * sigma * mu)
+                * (mu ** (-2.0 * u1))
+                * ((1.0 - mu) ** (-2.0 * u2))
+            )
+
+        def psi_den(sigma, u1, u2):
+            """
+            Cached denominator ∫0^1 ψ(μ)dμ.
+            """
+            key = cache_key(sigma, u1, u2)
+
+            if key not in cache["den"]:
+                den, _ = I(psi, 0.0, 1.0, args=(sigma, u1, u2))
+                cache["den"][key] = den
+
+            return cache["den"][key]
+        
+        def phi(x, sigma, u1, u2):
+            """
+            Cached φ(x) = ∫0^x ψ(μ)dμ / ∫0^1 ψ(μ)dμ.
+            """
+            key = cache_key(x, sigma, u1, u2)
+
+            if key not in cache["phi"]:
+                if x <= 0.0:
+                    cache["phi"][key] = 0.0
+                elif x >= 1.0:
+                    cache["phi"][key] = 1.0
+                else:
+                    num, _ = I(psi, 0.0, x, args=(sigma, u1, u2))
+                    den = psi_den(sigma, u1, u2)
+                    cache["phi"][key] = num / den
+
+            return cache["phi"][key]
+        
+        def prob_not_x(mu_xb,mu_ab):
+            '''E(rate b|X mut freq 1/2N) - samll correction term for 3 alleles
+            while x lineage is rising or fixing can get second mutation withewr x->b or a->b
+            assume second mutation has prob 1/2N of fixing
+            rate of supply muts, given x has vaf xt is
+            M mu_xb M x_t+M mu_ab M (1-x_t)
+            Then take expectation over t
+            gives expected rate of supply, then multiply by pfix 1/M
+            '''
+
+            # raw supply would be M**2 * (...).
+            # multiply by p_fix = 1/M, giving M * (...).
+            p_xb=-2*M*mu_xb*(1-1/(2*N))*math.log((1-1/(2*N)))
+            p_ab=-2*M*mu_ab*(1/(2*N))*math.log(1/(2*N))
+            
+            return p_xb+p_ab
+
+        def phi_prime(x, sigma, u1, u2):
+            """
+            Cached φ'(x) = ψ(x) / ∫0^1 ψ(μ)dμ.
+            """
+            key = cache_key(x, sigma, u1, u2)
+
+            if key not in cache["phi_prime"]:
+                den = psi_den(sigma, u1, u2)
+                cache["phi_prime"][key] = psi(x, sigma, u1, u2) / den
+
+            return cache["phi_prime"][key]
+
+        def green(x, y, sigma, u1, u2):
+            """
+            Killed Green function for absorption at 0 or 1. Starting at x
+            """
+            if y <= 0.0 or y >= 1.0:
+                return 0.0
+
+            g2 = y * (1.0 - y)
+            phix = phi(x, sigma, u1, u2)
+            phiy = phi(y, sigma, u1, u2)
+            phipy = phi_prime(y, sigma, u1, u2)
+
+            if x < y:
+                return 2.0 * phix * (1.0 - phiy) / (g2 * phipy)
+            else:
+                return 2.0 * (1.0 - phix) * phiy / (g2 * phipy)
+
+        def alpha(x, sigma, u1, u2):
+            """
+            Cached α(x) = ∫0^1 G(x,y)dy.
+            Mean absorption time in diffusion units.
+            """
+            key = cache_key(x, sigma, u1, u2)
+
+            if key not in cache["alpha"]:
+                eps = 1e-12
+
+                left = 0.0
+                right = 0.0
+
+                if x > eps:
+                    left, _ = I(
+                        lambda y: green(x, y, sigma, u1, u2),
+                        eps,
+                        x,
+                    )
+
+                if x < 1.0 - eps:
+                    right, _ = I(
+                        lambda y: green(x, y, sigma, u1, u2),
+                        x,
+                        1.0 - eps,
+                    )
+
+                cache["alpha"][key] = left + right
+
+            return cache["alpha"][key]
+
+        def neutral_alpha(x):
+            """
+            Neutral mean time to loss or fixation in diffusion units.
+            Generator: 0.5 * x * (1-x) * f''(x)
+            """
+            if x <= 0.0 or x >= 1.0:
+                return 0.0
+
+            return -2.0 * (
+                x * np.log(x) +
+                (1.0 - x) * np.log1p(-x)
+            )
+
+        def edge_params(x, y):
+            """
+            Parameters for edge x -> y.
+            Coordinate is frequency of y:
+                0 = fixed x
+                1 = fixed y
+            """
+            mu_xy = get_mu(x, y)
+            mu_yx = get_mu(y, x)
+
+            theta_xy = M * mu_xy
+            theta_yx = M * mu_yx
+
+            sigma_xy = M * (get_s(y) - get_s(x))
+
+            return theta_xy, theta_yx, sigma_xy
+        
+        def get_outward_rate(x):
+            rate=0
+            for y in alleles:
+                if x==y: continue
+                rate+=get_mu(x,y)
+            return rate
+
+
+        
+        def calc_rate(a,b):
+            # numerator: theta_ab * phi_ab(1/M)
+            theta_ab, theta_ba, sigma_ab = edge_params(a, b)
+
+            if theta_ab <= 0.0:
+                return 0.0
+
+            #only allow first order mutations
+            #prob of fixation
+            phi_ab_x0 = phi(x0, sigma_ab, theta_ab, M*get_outward_rate(b))
+
+            
+            # denominator: 1 + M * sum_{c != a} theta_ac * alpha_ac(1/M)
+            denominator_extra = 0.0
+            lambda_a=0
+            for c in alleles:
+                if c == a:
+                    continue
+
+                theta_ac, theta_ca, sigma_ac = edge_params(a, c)
+                if c==b:
+                    #then can use full expected time to loss or fixation
+                    if theta_ac <= 0.0:continue
+                    alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, get_outward_rate(c))
+                    denominator_extra += theta_ac * alpha_ac_x0
+                    continue
+                #else approximate with standard time to fixation
+                lambda_a+=theta_ac
+                #using outward_c will over inflate rate of extinction->denomenator larger
+                #alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, theta_ca)
+                #alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, get_outward_rate(c))
+                #alpha_ac_x0 = alpha(x0, sigma_ac, 0, 0)
+                
+                alpha_ac_x0=neutral_alpha(x0)
+                #print(theta_ac)
+                
+                denominator_extra += theta_ac * alpha_ac_x0
+
+            numerator = theta_ab * phi_ab_x0
+            
+            #prob of fixation of b given first mutation not to b
+            for j in alleles:
+                if a==j: continue
+                if b==j: continue
+                #M*get_mu(a,j)*
+                #mut supply N*muaj *prob of fixation
+                prob=M*get_mu(a,j)*prob_not_x(get_mu(j,b),get_mu(a,b))
+                
+                numerator+=prob
+
+            #numerator = lambda_a * phi_ab_x0
+
+
+            Qedge_ab = numerator / (1.0 + M * denominator_extra)
+
+            return Qedge_ab
+        
+        N = point.pop_size
+        M = 2.0 * N
+        x0 = 1.0 / M
+        if not all_rates:
+            return calc_rate(a,b)
+        else:
+            Qedge = {
+                x: {y: 0.0 for y in alleles}
+                for x in alleles
+            }
+
+            for x in alleles:
+                for y in alleles:
+                    if x == y:
+                        Qedge[x][y] = 0.0
+                    else:
+                        Qedge[x][y] = calc_rate(x, y)
+
+            #for x in alleles:
+                #Qedge[x][x] = -sum(Qedge[x][y] for y in alleles if y != x)
+
+            return Qedge
+            
+    
+    def get_sub_rate_diffusion_4_allele(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
+        '''
+        4 alelle approximation to wright fisher diffusion subb rate
+        assumes all mass is concentrated on the edge of the simplex-ie never have 3 segregating sites
+        if all rates = True returns matrix of all rates, else returns only the rate for a->b
+        '''
+        
+        
+        # inner functions
+        def get_mu_m(x, y):
+            """
+            Per-generation mutation rate x -> y.
+            
+            """
+            
+            return mu_matrix[x][y]
+
+        def get_s(x):
+            """
+            Allele fitness/selection value.
+            Edit this line if your selection coefficients are stored differently.
+            """
+            if hasattr(point, "selection"):
+                return 
+            return 0.0
+
+        def psi(mu, sigma, u1, u2):
+            """
+            ψ(μ) = exp(-2 σ μ) * μ^{-2u1} * (1-μ)^{-2u2}
+            """
+            # Avoid singularities at endpoints
+            if mu <= 0.0:
+                return 0.0
+            if mu >= 1.0:
+                return 0.0
+
+            return (
+                np.exp(-2.0 * sigma * mu)
+                * (mu ** (-2.0 * u1))
+                * ((1.0 - mu) ** (-2.0 * u2))
+            )
+
+        def phi(x, sigma, u1, u2):
+            """
+            φ(x) = ∫0^x ψ(μ)dμ / ∫0^1 ψ(μ)dμ
+            """
+            num, _ = I(psi, 0.0, x, args=(sigma, u1, u2))
+            den, _ = I(psi, 0.0, 1.0, args=(sigma, u1, u2))
+            return num / den
+
+        def phi_prime(x, sigma, u1, u2):
+            """
+            φ'(x) = ψ(x) / ∫0^1 ψ(μ)dμ
+            """
+            den, _ = I(psi, 0.0, 1.0, args=(sigma, u1, u2))
+            return psi(x, sigma, u1, u2) / den
+
+        def green(x, y, sigma, u1, u2):
+            """
+            Killed Green function for absorption at 0 or 1. 
+            """
+            if y <= 0.0 or y >= 1.0:
+                return 0.0
+
+            g2 = y * (1.0 - y)
+            phix = phi(x, sigma, u1, u2)
+            phiy = phi(y, sigma, u1, u2)
+            phipy = phi_prime(y, sigma, u1, u2)
+
+            if x < y:
+                return 2.0 * phix * (1.0 - phiy) / (g2 * phipy)
+            else:
+                return 2.0 * (1.0 - phix) * phiy / (g2 * phipy)
+
+        def alpha(x, sigma, u1, u2):
+            """
+            α(x) = ∫0^1 G(x,y)dy
+            Mean absorption time in diffusion units.
+            """
+            eps = 1e-12
+
+            left, _ = I(
+                lambda y: green(x, y, sigma, u1, u2),
+                eps,
+                x,
+            )
+
+            right, _ = I(
+                lambda y: green(x, y, sigma, u1, u2),
+                x,
+                1.0 - eps,
+            )
+
+            return left + right
+
+        def edge_params(x, y):
+            """
+            Parameters for edge x -> y.
+            Coordinate is frequency of y:
+                0 = fixed x
+                1 = fixed y
+            """
+            mu_xy = get_mu_m(x, y)
+            mu_yx = get_mu_m(y, x)
+
+            theta_xy = M * mu_xy
+            theta_yx = M * mu_yx
+
+            sigma_xy = M * (get_s(y) - get_s(x))
+
+            return theta_xy, theta_yx, sigma_xy
+        
+        def get_alpha_ac(a, c):
+            """
+            Cached alpha_ac(1/M), because this is expensive.
+            α(x) = ∫0^1 G(x,y)dy
+            Mean absorption time in diffusion units.
+            """
+            key = (a, c)
+
+            if key in alpha_cache:
+                return alpha_cache[key]
+
+            theta_ac, theta_ca, sigma_ac = edge_params(a, c)
+
+            if theta_ac <= 0.0:
+                alpha_cache[key] = 0.0
+            else:
+                alpha_cache[key] = alpha(x0, sigma_ac, theta_ac, theta_ca)
+
+            return alpha_cache[key]
+
+        def get_denominator_extra(a):
+            """
+            Cached denominator term:
+                sum_{c != a} theta_ac * alpha_ac(1/M)
+
+            This is shared by Q_edge_ab for all b with the same starting allele a.
+            """
+            if a in denominator_cache:
+                return denominator_cache[a]
+
+            denominator_extra = 0.0
+
+            for c in alleles:
+                if c == a:
+                    continue
+
+                theta_ac, theta_ca, sigma_ac = edge_params(a, c)
+
+                if theta_ac <= 0.0:
+                    continue
+
+                alpha_ac_x0 = get_alpha_ac(a, c)
+                denominator_extra += theta_ac * alpha_ac_x0
+
+            denominator_cache[a] = denominator_extra
+
+            return denominator_extra
+
+        def get_qedge_ab(a, b):
+            """
+            Q_edge_ab = theta_ab * phi_ab(1/M)
+                        / [1 + M * sum_{c != a} theta_ac * alpha_ac(1/M)]
+            """
+            if a == b:
+                return 0.0
+
+            theta_ab, theta_ba, sigma_ab = edge_params(a, b)
+
+            if theta_ab <= 0.0:
+                return 0.0
+
+            phi_ab_x0 = phi(x0, sigma_ab, theta_ab, theta_ba)
+            numerator = theta_ab * phi_ab_x0
+
+            denominator_extra = get_denominator_extra(a)
+
+            Qedge_ab = numerator / (1.0 + M * denominator_extra)
+
+            return Qedge_ab
+
+        alpha_cache = {}
+        denominator_cache = {}
+
+        N = point.pop_size
+        M = 2.0 * N
+        x0 = 1.0 / M
+
+        if all_rates:
+            Qedge = {
+                x: {y: 0.0 for y in alleles}
+                for x in alleles
+            }
+
+            for x in alleles:
+                for y in alleles:
+                    if x == y:
+                        Qedge[x][y] = 0.0
+                    else:
+                        Qedge[x][y] = get_qedge_ab(x, y)
+
+            #for x in alleles:
+                #Qedge[x][x] = -sum(Qedge[x][y] for y in alleles if y != x)
+
+            return Qedge
+        else:
+            if a is None or b is None:
+                raise ValueError("Both 'a' and 'b' must be specified when 'all_rates' is False.")
+
+            return get_qedge_ab(a, b)
+
+
+
+    def get_sub_rate_diffusion_prob(self,point):
+        """
+        Compute the substitution rate k for a Wright-Fisher diffusion
+        with selection and two-way mutation.
+        as sub rate = 1/time to fixation in generations
+        assuming mut starts at freq 1/2N and left boundary loss is refexive
+
+
+        Parameters
+        ----------
+        N : int
+            Diploid population size.
+        mu_f : float
+            Forward mutation rate.
+        mu_b : float
+            Backward mutation rate.
+        s : float
+            Selection coefficient.
+
+        Returns
+        -------
+        k : float
+            Substitution rate.
+        """
+        # Scaled parameters
         sigma = 2*point.pop_size*point.selection_coeff
         u1 = point.mue_frwrd*point.pop_size
         u2 = point.mue_bckwrds*point.pop_size
-        #time = I(lambda y: g_of_x_y(y, sigma, u1, u2), 0, 1, limit=20, epsabs=1e-3, epsrel=1e-3)[0]
-        time = I(lambda y: g_of_x_y(y, sigma, u1, u2), 0, 1)[0]
-        #time = float(II(lambda y: g_of_x_y(y, sigma, u1, u2), [0, 1]))
-        return (1/time)/point.pop_size
+        N=point.pop_size
+        x0 = 1/(2*N)
 
+        # Auxiliary function psi
+        def psi(y):
+            # avoid division by zero at boundaries
+            y = np.clip(y, 1e-12, 1-1e-12)
+            return np.exp(-2 * sigma * y) * (y**(-2*u1)) * ((1-y)**(-2*u2))
+
+        # Normalization constant for scale function
+        C, _ = I(psi, 0, 1)
+
+        # Scale function phi -not using as presimplified
+        def phi(x):
+            integral, _ = I(psi, 0, x)
+            return integral / C
+
+        def x_1_psi(x):
+            integral, _ = I(psi, x, 1)
+            return integral
+
+        #no reflection 
+        def g(y):
+            if y < x0:
+                return 2* x_1_psi(x0)*phi(y) / (y * (1 - y) * psi(y))
+            else:
+                return 2* x_1_psi(y)*phi(x0) / (y * (1 - y) * psi(y))
+
+        # Mean absorption time
+        T_abs_star, _ = I(g, 0, 1)
+        
+        # Fixation probability of a new mutant
+        P_fix_star = phi(x0)
+
+        k=P_fix_star/(T_abs_star*2*N)
+
+        return k
+    
+   
+       
+       
     def get_selection(self, sub_rate, mu, pop_size, ratio=1, l_boundary=1e-4, r_boundary=1e-6, negative=True):
         '''gradient descent to find the selection that gives the sub_rate
         '''

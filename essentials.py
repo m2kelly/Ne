@@ -190,7 +190,8 @@ def condition_muts_all(muts_vector, occ_vector, groups,
         vector /= occ_vector.loc[index, :].sum()
         vectors.append(vector)
 
-    #remove the lowest 10% of vectors
+    #remove the lowest 5% of vectors
+    #not currenlty being used, even if filter low muts
     if filter_low_muts:
         filtered_vectors = []
         for vector in vectors:
@@ -216,8 +217,59 @@ def condition_muts_all(muts_vector, occ_vector, groups,
 
     return vectors
 
-def smooth_dicts(*dicts, window_size=2):
 
+def condition_muts_all_occs(muts_vector, occ_vector, groups,
+                     filter_low_muts=False, drop_small_occs=True,low_occs_min=100000):
+
+
+    if drop_small_occs:
+        index = (occ_vector.sum() > low_occs_min)
+        muts_vector = muts_vector.loc[:, index]
+        occ_vector = occ_vector.loc[:, index]
+
+    vectors = []
+    occs=[]
+    for group in groups:
+        index = [str(mut) for mut in group]
+        vector = muts_vector.loc[index, :].sum()
+        vector /= occ_vector.loc[index, :].sum()
+        occs.append(occ_vector.loc[index, :].sum())
+        vectors.append(vector)
+    print(f'occs {occs}')
+    #remove the lowest 5% of vectors
+    #not currenlty being used, even if filter low muts
+    if filter_low_muts:
+        filtered_vectors = []
+        for vector in vectors:
+            vector = vector.sort_values()
+            vector = vector.iloc[int(len(vector)*0.05):]
+            filtered_vectors.append(vector)
+
+
+    #remove positions with 0 mutation rate in any vector
+    zero_index = []
+    for vector in vectors: zero_index += list(vector.index[vector == 0])
+
+    zero_index = list(set(zero_index))
+    for vector in vectors: vector.drop(zero_index, inplace=True)
+    for occ in occs: occ.drop(zero_index, inplace=True)
+      
+
+    #remove na values
+    na_index = []
+    for vector in vectors: na_index += list(vector.index[vector.isna()])
+
+    na_index = list(set(na_index))
+    for vector in vectors: vector.drop(na_index, inplace=True, errors='ignore')
+    for occ in occs: occ.drop(na_index, inplace=True, errors='ignore')
+    
+    return vectors, occs
+
+
+def smooth_dicts(*dicts, window_size=2):
+    #allowing na option for no smoothing
+    if window_size==1:
+        return dicts
     weights = scipy.signal.gaussian(window_size, std=window_size/3)
 
 
@@ -266,7 +318,7 @@ def smooth_dicts(*dicts, window_size=2):
             #change type to float
             muts = muts.astype(float)
 
-            smoothed_muts = muts.rolling(window_size, center=True, axis=0, min_periods=0).apply(weighted_mean_with_nans, engine='numba', raw=True)
+            smoothed_muts = muts.rolling(window_size, center=True,min_periods=0).apply(weighted_mean_with_nans, engine='numba', raw=True)
 
 
             smoothed_muts = smoothed_muts.drop(smoothed_muts.index[nan_index])
@@ -396,6 +448,7 @@ def filter_low_mut_CpGs(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, cpgs=N
 
     return muts_dict_filtered, occ_dict_filtered
 
+#sorts chrom by cpg mutability, gets indices of all bins below remove percentage - to remove later
 def get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, cpgs=None):
     muts_dict = deepcopy(muts_dict_o)
     occ_dict = deepcopy(occ_dict_o)
@@ -438,6 +491,59 @@ def get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, cpgs=
         indeces[chrom] = index
     return indeces
 
+
+
+#input of form index and bool (True or False) for each bin in chrs
+#keep is True
+#indices to be removed are False
+def extract_random_indices_after_filter(chr_bool, percentage_remove):
+    indices_filt = chr_bool[chr_bool].index
+    size_remove= int(len(indices_filt)*(percentage_remove))
+    indices_remove = np.random.choice(indices_filt, size=size_remove, replace=False)
+    
+    chr_bool_random = chr_bool.copy()
+
+    # Set randomly selected bins to removed to False
+    chr_bool_random.iloc[indices_remove] = False
+    return chr_bool_random
+
+
+def filter_random_both_cats(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, random_remove_percentage=0, cpgs=None, non_cpgs=None):
+    cpg_filter = get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage, cpgs)
+    non_cpg_filter = get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage, non_cpgs)
+
+    muts_dict = deepcopy(muts_dict_o)
+    occ_dict = deepcopy(occ_dict_o)
+
+    muts_dict_filtered = {}
+    occ_dict_filtered = {}
+    len_index = 0; len_cpg_index = 0; len_non_cpg_index = 0; len_random_index = 0
+    for chrom in CHROMS:
+
+        if chrom not in occ_dict: continue
+        muts = muts_dict[chrom]; muts = muts.astype(float)
+        occ = occ_dict[chrom]; occ = occ.astype(float)
+        
+        commmon_index = cpg_filter[chrom] & non_cpg_filter[chrom] 
+        rand_common_index = extract_random_indices_after_filter(commmon_index, random_remove_percentage)
+        
+        muts.loc[:, ~rand_common_index] = None
+        occ.loc[:, ~rand_common_index] = None
+        len_index += len([i for i in commmon_index if i])
+        len_random_index += len([i for i in rand_common_index if i])
+        len_cpg_index += len([i for i in cpg_filter[chrom] if i])
+        len_non_cpg_index += len([i for i in non_cpg_filter[chrom] if i])
+        muts_dict_filtered[chrom] = muts
+        occ_dict_filtered[chrom] = occ
+
+    print(f'len after removing random: {len_random_index}')
+    print(f'len cpg index after filtering 0 cpgs: {len_cpg_index}')
+    print(f'len non cpg index after filtering 0 cpgs: {len_non_cpg_index}')
+    print(f'len after filtering: {len_index}')
+    
+    return muts_dict_filtered, occ_dict_filtered
+
+
 def filter_low_both_cats(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, cpgs=None, non_cpgs=None):
     cpg_filter = get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage, cpgs)
     non_cpg_filter = get_filter_low_index(muts_dict_o, occ_dict_o, cpg_remove_percentage, non_cpgs)
@@ -453,8 +559,8 @@ def filter_low_both_cats(muts_dict_o, occ_dict_o, cpg_remove_percentage=0, cpgs=
         muts = muts_dict[chrom]; muts = muts.astype(float)
         occ = occ_dict[chrom]; occ = occ.astype(float)
         commmon_index = cpg_filter[chrom] & non_cpg_filter[chrom]
-        muts.loc[:, ~commmon_index] = None
-        occ.loc[:, ~commmon_index] = None
+        muts.loc[:, ~commmon_index] = np.nan
+        occ.loc[:, ~commmon_index] = np.nan
         len_index += len([i for i in commmon_index if i])
         len_cpg_index += len([i for i in cpg_filter[chrom] if i])
         len_non_cpg_index += len([i for i in non_cpg_filter[chrom] if i])

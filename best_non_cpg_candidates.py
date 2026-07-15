@@ -1,4 +1,5 @@
 import pickle
+from sklearn.linear_model import LinearRegression
 import pandas as pd
 from . import essentials as es
 import warnings
@@ -6,11 +7,17 @@ from copy import deepcopy
 from scipy.stats import kendalltau
 warnings.filterwarnings('ignore')
 from .base_operations import Operations
+import numpy as np
+import matplotlib.pyplot as plt
 
-class BestNonCpGCandidates(Operations):
+from scipy.stats import gaussian_kde
+from scipy.ndimage import gaussian_filter1d
+
+#maria addition to try classical beam search (allowing addition, removal and replacement)
+class BestNonCpGCandidatesBeam(Operations):
 
     def __init__(self, name, directory, best_smoothing, cpgs=None, non_cpg_pool=None, collapse=True,
-                 muts_dict_raw=None, occ_dict_raw=None, cpg_remove_percentage=0, prefix='',
+                 muts_dict_raw=None, occ_dict_raw=None, cpg_remove_percentage=0, cutoff=0.9, prefix='',
                  operations=None):
 
         Operations.__init__(self, name=name, directory=directory, collapse=collapse,
@@ -18,14 +25,14 @@ class BestNonCpGCandidates(Operations):
                             cpg_remove_percentage=cpg_remove_percentage, prefix=prefix,
                             operations=operations)
 
-        self.best_window = best_smoothing
-        self.smooth_dics()
+        
 
+        self.cpg_remove_percentage=cpg_remove_percentage
         if cpgs is None:
             all_cpgs = es.mutation.get_cpg_muts()
             self.cpg_muts = [x for x in all_cpgs if str(x) in self.occ_dict_raw['chr1'].index]
         else: self.cpg_muts = [c for c in cpgs if str(c) in self.occ_dict_raw['chr1'].index]
-
+        print(f'cpg muts: {self.cpg_muts}')
         if non_cpg_pool is None:
             self.non_cpg_muts = [m for m in es.get_mut_obj_list() if str(m) in self.occ_dict_raw['chr1'].index]
             self.non_cpg_muts = [m for m in self.non_cpg_muts if m not in self.cpg_muts]
@@ -36,109 +43,387 @@ class BestNonCpGCandidates(Operations):
         self.file_name = f'{self.prefix}best_correlations_smoothed_{name}.csv'
         self.best_candidates = None
 
-    @classmethod
-    def compare_mut_lists(cls, list1, list2):
-        '''returns True if the two lists have the same mutations'''
-        if len(list1) != len(list2):
-            return False
-        for mut in list1:
-            if mut not in list2:
-                return False
-        return True
+    def score_group(self, group, occ_vector, muts_vector):
+        cpg_muts=[str(m) for m in self.cpg_muts]
+        cpg_vector=muts_vector.loc[cpg_muts,:].sum() / occ_vector.loc[cpg_muts,:].sum()
+        
 
-    @classmethod
-    def group_was_done(cls, new_group, already_done):
-        return any([cls.compare_mut_lists(new_group, group) for group in already_done])
+        group=[str(m) for m in group]
+        non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
+        
+        '''function to remove zero bins and calculate kendall tau correlations'''
+        '''
+        cpg_vector, non_cpg_vector = es.condition_muts(
+            muts_vector,
+            occ_vector,
+            self.cpg_muts,
+            group
+        )
+        '''
+        tau = kendalltau(cpg_vector, non_cpg_vector)[0]
 
-    def get_added_new_corr(self, prev_best_corr, occ_dict=None, muts_dict=None):
-        '''adds a new mutation to each of the previous best correlations,
-        and returns the new correlations'''
-        if occ_dict is None: occ_dict = deepcopy(self.occ_dict_smoothed)
-        if muts_dict is None: muts_dict = deepcopy(self.muts_dict_smoothed)
+        if np.isnan(tau):
+            return -1
 
-        new_correlations = {}
-        already_done = []
-        for idx, group in enumerate(prev_best_corr.index):
-            group = es.mutation.str_to_list(group)
-            this_pool = [mut for mut in self.non_cpg_muts if mut not in group]
+        return round(tau, 5)
+    
+    def score_group_linear_regression(self, group, occ_vector, muts_vector):
+        '''function to remove zero bins and calculate R^2 for linear regression through origin'''
+        cpg_muts=[str(m) for m in self.cpg_muts]
+        cpg_vector=muts_vector.loc[cpg_muts,:].sum() / occ_vector.loc[cpg_muts,:].sum()
+        
 
-            for added_mut in this_pool:
-                new_group = group + [added_mut]
-                if self.group_was_done(new_group, already_done): continue
+        group=[str(m) for m in group]
+        non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
+        
+        x=np.array(non_cpg_vector).reshape((-1, 1)) # must be 2D
+        y=np.array(cpg_vector)
+        #weights=1/(1+y) #weight more the points with low mutation rates, as they are less affected by recurrence, and more informative of the underlying mutability, as not saturated
+       
+        model = LinearRegression().fit(x, y)
+        error=model.score(x, y)
+        #error = model.score(x, y,sample_weight=weights)
+        
+       
+        if np.isnan(error):
+            return -1
 
-                already_done.append(new_group)
+        return round(error, 5)
+    
+    def plot_group_linear_regression(self, group, occ_vector, muts_vector):
+        '''function to remove zero bins and calculate R^2 for linear regression through origin'''
+        cpg_muts=[str(m) for m in self.cpg_muts]
+        cpg_vector=muts_vector.loc[cpg_muts,:].sum() / occ_vector.loc[cpg_muts,:].sum()
+        
 
-                cpg_vector, non_cpg_vector = es.condition_muts(muts_dict, occ_dict, self.cpg_muts, new_group)
+        group=[str(m) for m in group]
+        non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
+        
+        x=np.array(non_cpg_vector).reshape((-1, 1)) # must be 2D
+        y=np.array(cpg_vector)
+        weights=1/(1+y)**2 #weight more the points with low mutation rates, as they are less affected by recurrence, and more informative of the underlying mutability, as not saturated
+       
+        model = LinearRegression(fit_intercept=False).fit(x, y, sample_weight=weights)
+        error = model.score(x, y,sample_weight=weights)
+        
+        plt.clf()
+        plt.scatter(x, y, color='blue', alpha=0.1, label='Data points')
+        plt.plot(x, model.predict(x), color='red', label=f'no intercept (R^2={error:.2f}),coef={model.coef_[0]:.2f}')
+        plt.xlabel('Non-CpG Mutation Rate')
+        plt.ylabel('CpG Mutation Rate')
+        plt.title('Linear Regression of CpG vs Non-CpG Mutation Rates')
+        plt.legend()
+        plt.savefig(f'{self.prefix}best_cpg_vs_non_cpg.png')
+        
+        return
 
-                zipped = zip(cpg_vector, non_cpg_vector)
-                zipped = sorted(zipped, key=lambda x: x[0])
-                cpg_vector, non_cpg_vector = zip(*zipped)
+        
 
-                correlation = kendalltau(cpg_vector, non_cpg_vector)[0]
-                correlation = round(correlation, 5)
+    def generate_neighbors(self, group):
+        '''from a list of categories generate all distance one neighbour groups
+        from adding/subtracting/swapping one mut'''
+        neighbors = []
 
-                new_group_str = es.mutation.list_to_str(new_group)
-                new_correlations[new_group_str] = correlation
+        group_set = set(group)
 
-            #print(f'---{idx}/{len(prev_best_corr.index)}---', end='\r')
+        # ADD
+        for mut in self.non_cpg_muts:
+            if mut not in group_set:
+                neighbors.append(group + [mut])
 
-        return pd.DataFrame(new_correlations.values(), index=new_correlations.keys(), columns=['correlation'])
+        # REMOVE
+        if len(group) > 1:
+            for mut in group:
+                neighbors.append(
+                    [m for m in group if m != mut]
+                )
 
-    def _get_first_group(self):
+        # SWAP
+        '''
+        for removed in group:
+            reduced = [m for m in group if m != removed]
 
-        occ_dict = deepcopy(self.occ_dict_smoothed)
-        muts_dict = deepcopy(self.muts_dict_smoothed)
+            for added in self.non_cpg_muts:
+                if added not in reduced:
+                    if added != removed:
+                        neighbors.append(reduced + [added])
+        '''
 
-        first_group = {}
+
+        return neighbors
+
+    @staticmethod
+    
+    #reindex these then remove again?
+    def sort_by_cpg_non_cpg_random(cpg,non_cpg):
+        print('chosing cpg, non cpg orders')
+        '''
+        sort cpg and non cpg vectors
+        choose each positoin by randomly chossing next smallest cpg or next smappest non cpg
+        avoiding sorting by only one, giving flick effect'''
+        cpg_sorted = cpg.sort_values(ascending=True).index.tolist()
+        non_cpg_sorted = non_cpg.sort_values(ascending=True).index.tolist()
+        
+        indexes=[]
+        i=0
+        j=0
+        cpg_non_cpg_choices=[]
+        for x in range(len(cpg)):
+            choice = np.random.choice([0, 1])
+            if choice==0:
+                if i>=len(cpg_sorted): #only intems in j list left, so have to choose from there
+                    choosen_index= non_cpg_sorted[j]
+                    j+=1
+                    cpg_sorted.remove(choosen_index) #remove index from other list to avoid choosing it again
+                    cpg_non_cpg_choices.append(1)   #1 is added non cpg, 0 is added cpg
+                else:
+                    choosen_index=cpg_sorted[i] #chosen index is the next smallest cpg
+                    i+=1   
+                    non_cpg_sorted.remove(choosen_index) #remove index from other list to avoid choosing it again
+                    cpg_non_cpg_choices.append(0)
+
+            else:
+                if j>=len(non_cpg_sorted): #only intems in i list left, so have to choose from there
+                    choosen_index= cpg_sorted[i]
+                    i+=1 
+                    non_cpg_sorted.remove(choosen_index)
+                    cpg_non_cpg_choices.append(0)
+                else:
+                    choosen_index=non_cpg_sorted[j]
+                    j+=1
+                    cpg_sorted.remove(choosen_index)
+                    cpg_non_cpg_choices.append(1)
+
+            indexes.append(choosen_index)
+            
+        #print(i,j, indexes, cpg_non_cpg_choices)
+        
+        return indexes
+
+    @staticmethod
+    def remove_based_on_rank(cpg_vector,non_cpg_vector,cutoff=0.9):
+
+        cpg_rank = cpg_vector.rank(method='average')
+        non_cpg_rank = non_cpg_vector.rank(method='average')
+
+        # absolute rank difference
+        rank_diff = np.abs(cpg_rank - non_cpg_rank)
+        if cutoff < 1:
+            cut=rank_diff.quantile(cutoff)
+        else:
+            cut = cutoff
+        # keep indices within cutoff
+        keep_indices = rank_diff[rank_diff <= cut].index
+        return keep_indices
+    
+    
+    
+    def filter_dicts_low_mut_rank(self,occ_dict,muts_dict,cpg_labels=None,non_cpg_labels=None,cpg_remove_percentage=0.0,cutoff=0.9):
+        '''function to filter the muts and occ dicts based on the cpg and non cpg labels'''
+        occ_dict = deepcopy(occ_dict)
+        muts_dict = deepcopy(muts_dict)
+        #dict must actually be vector
+        muts_vector=es.rename_cols(muts_dict)
+        occ_vector=es.rename_cols(occ_dict)
+        print(f"Initial number of bins: {len(occ_vector.columns)}")
+
+        #remove bins with low total occ, max ==300k
+        mask = occ_vector.sum(axis=0) >= 100000
+        occ_vector = occ_vector.loc[:, mask]
+        muts_vector = muts_vector.loc[:, mask]
+        print(f"Remaining bins after filtering low coverage: {len(occ_vector.columns)}")
+
+        if cpg_labels==None:
+            cpg_labels=[str(x) for x in self.cpg_muts]
+        if non_cpg_labels==None:
+            non_cpg_labels=[x for x in muts_vector.index if x not in cpg_labels] #as collapse trinucs
+
+        #cpg pooled rate
+        cpg_muts = muts_vector.loc[cpg_labels].sum()
+        cpg_occs_copy = occ_vector.loc[cpg_labels].sum()
+        cpg_rate = cpg_muts / cpg_occs_copy
+
+
+        #non cpg pooled rate
+        print(muts_vector.index)
+        non_cpg_muts = muts_vector.loc[non_cpg_labels].sum()
+        non_cpg_occs_copy = occ_vector.loc[non_cpg_labels].sum()
+        non_cpg_rate = non_cpg_muts / non_cpg_occs_copy
+
+        #first remove based on rank -so removing same bins from for every cpg removal percentage
+        keep_rank=self.remove_based_on_rank(cpg_rate,non_cpg_rate,cutoff=cutoff)
+
+        #then remove low mutability bins based on cpg removal percentage, so different bins are removed for each cpg removal percentage
+        cpg_rate=cpg_rate.loc[keep_rank]
+        non_cpg_rate=non_cpg_rate.loc[keep_rank]
+
+        #sorting based on cpg and non-cpg rates
+        sorted_indexes=self.sort_by_cpg_non_cpg_random(cpg_rate,non_cpg_rate)
+
+        #test: sorting by cpg
+        #sorted_indexes=list(cpg_rate.sort_values(ascending=True).index)
+
+        to_keep_more_mutable=sorted_indexes[int(len(sorted_indexes)*cpg_remove_percentage):]
+
+
+        #remove most mutable bins as affected by recurrence
+        #remove_high_indices=self.remove_based_on_rank_and_low_mut(cpg_rate,non_cpg_rate,cutoff=0.99999,cpg_remove=0.6)
+        #keep_indices=list(set(high_keep_indices) - set(remove_high_indices) )
+        #print(len(keep_indices))
+        return to_keep_more_mutable
+    
+    
+   
+    def filter_low_mut(self,occ_dict,muts_dict,remove_low,cutoff):
+        print(f'remove low = {remove_low}')
+        '''keep bins in the intersection of cpg>remove low & non cpg>remove low
+        '''
+        occ_vector=es.rename_cols(occ_dict)
+        muts_vector=es.rename_cols(muts_dict)
+        
+        print(f"starting bin length: {len(occ_vector.columns)}")
+        
+        #filtering based on low occ
+        #mask = occ_vector.sum(axis=0) >= 100000
+        #mask, if any of occ vector rows not >0
+        mask = (occ_vector > 0).all(axis=0)
+        occ_vector = occ_vector.loc[:, mask]
+        muts_vector = muts_vector.loc[:, mask]
+
+        print(f"bin length after filtering low coverage: {len(occ_vector.columns)}")
+        
+        
+        cpg_muts=[str(m) for m in self.cpg_muts]
+        cpg_vector=muts_vector.loc[cpg_muts,:].sum().div(occ_vector.loc[cpg_muts,:].sum().replace(0, np.nan))
+        cpg_vector.dropna(inplace=True)
+        cpg_vector=cpg_vector[cpg_vector>0]
+        print(f"cpg vector length after filtering na,0: {len(cpg_vector)}")
+
+        non_cpg_muts=[str(m) for m in self.non_cpg_muts]
+        non_cpg_vector=muts_vector.loc[non_cpg_muts,:].sum().div(occ_vector.loc[non_cpg_muts,:].sum().replace(0, np.nan))
+        non_cpg_vector.dropna(inplace=True)
+        non_cpg_vector=non_cpg_vector[non_cpg_vector>0]
+        print(f"non-cpg vector length after filtering na,0: {len(non_cpg_vector)}")
+        
+        #first remove based on rank -so removing same bins from for every cpg removal percentage
+        '''
+        keep_rank=self.remove_based_on_rank(cpg_vector,non_cpg_vector,cutoff=None)
+
+        cpg_vector=cpg_vector.loc[keep_rank]
+        non_cpg_vector=non_cpg_vector.loc[keep_rank]
+        print(f"bin length after filtering by rank: {len(cpg_vector)}")
+        '''
+        
+        cpg_high=cpg_vector[cpg_vector>=cpg_vector.quantile(remove_low)].index
+        non_cpg_high=non_cpg_vector[non_cpg_vector>=non_cpg_vector.quantile(remove_low)].index
+        #take intersect of high cpg and high non cpg 
+        low_ints=list(set(cpg_high) & (set(non_cpg_high)))
+        print(f"bin length after filtering low mutability bins: {len(low_ints)}")
+        return low_ints
+
+    def get_best_candidates(self,cpg_labels=None, non_cpg_labels=None):
+        '''main function to perform beam search
+        iteravily try removing/adding and swapping 1 category from 10 best scoring categories in previous iteration
+        if increase score keep going
+        else stop
+        else keep going for max iter iterations'''
+        beam_width=10
+        max_iter=11
+        occ_dict = deepcopy(self.occ_dict_raw)
+        muts_dict = deepcopy(self.muts_dict_raw)
+                                                                                        
+        muts_vector=es.rename_cols(muts_dict)
+        occ_vector=es.rename_cols(occ_dict)
+        
+        #filer normal 
+        #keep_indices=self.filter_dicts_low_mut_rank(occ_dict,muts_dict,cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff)
+        
+        #filter only on low mut
+        keep_indices=self.filter_low_mut(occ_dict,muts_dict,self.cpg_remove_percentage,self.cutoff)
+
+        #testing removing top 20% most mutable bins, based on cpg and non-cpg rates, 
+        # to see if it improves correlation and gives more stable candidates
+        # as not affected by recurrence
+        #test
+        #keep_indices=keep_indices[:int(len(keep_indices)*0.8)]
+    
+        occ_vector=occ_vector.loc[:, keep_indices]
+        muts_vector=muts_vector.loc[:, keep_indices]
+        
+        
+        # initialize with singletons
+        beam = []
 
         for mut in self.non_cpg_muts:
 
-            cpg_vector, non_cpg_vector = es.condition_muts(muts_dict, occ_dict, self.cpg_muts, [mut])
-            zipped = zip(cpg_vector, non_cpg_vector)
-            zipped = sorted(zipped, key=lambda x: x[0])
-            cpg_vector, non_cpg_vector = zip(*zipped)
+            group = [mut]
+            #R^2 for linear regression through origin
+            #score=self.score_group_linear_regression(group, occ_vector, muts_vector) 
+            #calculates correlations within group to cpgs
+            score = self.score_group(group, occ_vector, muts_vector)
+            beam.append((group, score))
 
-            correlation = kendalltau(cpg_vector, non_cpg_vector)[0]
-            correlation = round(correlation, 5)
+        beam = sorted(beam, key=lambda x: x[1], reverse=True)
+        beam = beam[:beam_width]
 
-            first_group[es.mutation.list_to_str([mut])] = [correlation]
+        best_group, best_score = beam[0]
+        #TESTING WITH ONE CANDIDATE
+        return best_group[0]
+        visited = set()
 
-        first_group = pd.DataFrame(first_group.values() , index=first_group.keys(), columns=['correlation'])
-        first_group = first_group.sort_values('correlation', axis=0, ascending=False)
+        for iteration in range(max_iter):
 
-        first_group.to_csv(self.file_name, sep='\t')
-        corrs = first_group.iloc[:50, :]
-        return corrs
+            print(f"Iteration {iteration}")
 
-    def get_best_candidates(self):
-        occ_dict = deepcopy(self.occ_dict_smoothed)
-        muts_dict = deepcopy(self.muts_dict_smoothed)
+            candidates = []
 
-        first_group = self._get_first_group()
-        best_corr = first_group.sort_values('correlation', axis=0, ascending=False)
-        corrs = best_corr.iloc[:50, :]
+            for group, _ in beam:
+                #finds all neighbours (from swaps, additions or removals)
+                neighbors = self.generate_neighbors(group)
 
-        top_candidate = deepcopy(best_corr.index[0])
-        for i in range(1, (len(self.cpg_muts)*2)+1):
-            print(f'---{i}---',end='\r')
-            correlations = self.get_added_new_corr(corrs, occ_dict=occ_dict, muts_dict=muts_dict)
+                for new_group in neighbors:
 
-            correlations = correlations.sort_values('correlation', axis=0, ascending=False)
-            #best_corr = best_corr.append(corrs)
-            best_corr = pd.concat([best_corr, corrs], ignore_index=False)
+                    key = tuple(sorted(str(m) for m in new_group))
+                    if key in visited:
+                        continue
 
-            corrs = correlations.iloc[:10, :] #for the next iteration
+                    visited.add(key)
+                    #score_group for kendall tau
+                    score = self.score_group(
+                        new_group,
+                        occ_vector,
+                        muts_vector
+                    )
 
-            best_corr = best_corr.sort_values('correlation', axis=0, ascending=False)
+                    candidates.append((new_group, score))
 
-            best_corr.to_csv(self.file_name, sep='\t', mode='w')
-            if best_corr.index[0] == top_candidate and i!=1:
+            if len(candidates) == 0:
                 break
-            else:
-                top_candidate = deepcopy(best_corr.index[0])
+            #beam search, sort best candidates and keeps
+            candidates = sorted(
+                candidates,
+                key=lambda x: x[1],
+                reverse=True
+            )
 
-        self.write_logs(f'Best non-cpg candidates:{top_candidate}')
-        top_candidate = top_candidate.split(',')
-        top_candidate = [es.mutation(label=m) for m in top_candidate]
-        self.best_candidates = top_candidate
-        return top_candidate
+            beam = candidates[:beam_width]
+            print(f'{iteration}:{beam}')
+            #if imporved correlation then add new score
+            if beam[0][1] > best_score:
+                best_group, best_score = beam[0]
+            #enforce a minimum size of 4, to match number of cpgs
+            elif len(beam[0][0]) <5:
+                best_group, best_score = beam[0]
+
+
+            else:
+                self.write_logs(f"No improvement after {iteration} iterations")
+                break
+
+        self.write_logs(f'Best non-cpg candidates:{best_group}, tau:{best_score}')
+        
+        #top_candidate = [es.mutation(label=m) for m in best_group]
+        self.plot_group_linear_regression(best_group, occ_vector, muts_vector)
+        self.best_candidates = best_group
+        
+        return best_group
