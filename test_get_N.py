@@ -86,7 +86,7 @@ plt.savefig('test_N_e/recurr_corrected_subs.png')
 
 operations = Operations(collapse=False,muts_dict_raw={},occ_dict_raw={})
 popcalc = PopSizeCalculator(gens=1, cpg_subs=cpg_subs,
-                         non_cpg_subs=non_cpg_subs, cpg_subs_bckwrds=cpg_subs_bckwrds,
+                         non_cpg_sunon_cpg_subs, cpg_subs_bckwrds=cpg_subs_bckwrds,
                          non_cpg_subs_bckwrds=non_cpg_subs_bckwrds,cpg_occs=cpg_occs,
                          non_cpg_occs=non_cpg_occs, cpg_occs_bckwrds=cpg_occs_bckwrds, 
                          non_cpg_occs_bckwrds=non_cpg_occs_bckwrds,

@@ -327,8 +327,8 @@ class BestNonCpGCandidatesBeam(Operations):
         if increase score keep going
         else stop
         else keep going for max iter iterations'''
-        beam_width=10
-        max_iter=11
+        beam_width=4
+        max_iter=10
         occ_dict = deepcopy(self.occ_dict_raw)
         muts_dict = deepcopy(self.muts_dict_raw)
                                                                                         
@@ -368,7 +368,7 @@ class BestNonCpGCandidatesBeam(Operations):
 
         best_group, best_score = beam[0]
         #TESTING WITH ONE CANDIDATE
-        return best_group[0]
+        #return best_group[0]
         visited = set()
 
         for iteration in range(max_iter):

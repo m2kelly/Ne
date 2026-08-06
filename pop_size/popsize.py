@@ -72,11 +72,11 @@ class PopSizeCalculator(Operations):
                         print(f'Error: {e} for pop: {pop}, subf: {subf}, b: {b}')
                         return np.inf
 
-        cpg_muts = Parallel(n_jobs=-1, verbose=0)(
+        cpg_muts = Parallel(n_jobs=4, verbose=0)(
             delayed(parallel_predictor)(subf, subb, pop) for subf, subb in zip(self.cpg_subs, self.cpg_subs_bckwrds)
         )
 
-        non_cpg_muts = Parallel(n_jobs=-1, verbose=0)(
+        non_cpg_muts = Parallel(n_jobs=4, verbose=0)(
             delayed(parallel_predictor)(subf, subb, pop) for subf, subb in zip(self.non_cpg_subs, self.non_cpg_subs_bckwrds)
         )
 
@@ -88,8 +88,8 @@ class PopSizeCalculator(Operations):
         def parallel_predictor(pop,mut,sub_matrix,subf=0,b=0): #4aleles uses sub matrix not subf, b
             try:
                 mu=self.predictor.get_mu(GPA(0, b, int(pop), mean_sub_rate=subf),sub_matrix,mut.tri[1],mut.base)
-                self.write_logs(mut)
-                self.write_logs(mu)
+                #self.write_logs(mut)
+                #self.write_logs(mu)
                 return mu
 
             except Exception as e:
@@ -102,6 +102,7 @@ class PopSizeCalculator(Operations):
                         print(traceback.format_exc())
                         print(f'Error: {e} for pop: {pop}, subf: {subf}, b: {b}')
                         return np.inf
+            
                     
         def make_4allele_matrix(context):
             """
@@ -132,7 +133,7 @@ class PopSizeCalculator(Operations):
                         matrix[ref][alt] = self.rates_dict[key]
                     else:
                         key_rc = key.get_rev_comp()
-                        
+
                         matrix[ref][alt] = self.rates_dict[key_rc]
 
                 
@@ -180,20 +181,49 @@ class PopSizeCalculator(Operations):
                         run_matrix[ref][alt] = value
 
             return run_matrix
+
+        def process_cat(mut_label):
+            matrix=make_4allele_matrix(mut_label.tri)
+            n=get_n_runs(matrix)
+            muts = Parallel(n_jobs=-1, verbose=0)(
+                            delayed(parallel_predictor)(pop,mut_label,get_matrix_run(matrix, i)) for i in range(n)
+                        )
+            return muts
             
         cpgs=[]
         non_cpgs=[]
+        #to avoid recounting the same category twice if it appears twice
+        cpg_labels=[]
+        non_cpg_labels=[]
         for cpg,non_cpg in self.cpg_non_cpg_dict.items():
+
+            if cpg in cpg_labels:
+                cpgs.append(cpgs[cpg_labels.index(cpg)])
+            else:
+                cpgs.append(process_cat(cpg))
+
+            if non_cpg in non_cpg_labels:
+                #if already porcessed this mut category
+                non_cpgs.append(non_cpgs[non_cpg_labels.index(non_cpg)])
+            else:
+                #else process-find mu
+                non_cpgs.append(process_cat(non_cpg))
+
             
+
             #make 4 allele mut matrix for each cpg, non cpg context, need mu_frwd and mu_back for all alts at middle base
             cpg_matrix=make_4allele_matrix(cpg.tri)
+            n_cpg=get_n_runs(cpg_matrix)
+
+            
             non_cpg_matrix=make_4allele_matrix(non_cpg.tri)
 
-            n_cpg=get_n_runs(cpg_matrix)
+           
             n_non_cpg=get_n_runs(non_cpg_matrix)
 
             
             #edit so input one rate in matrix at a time (now matrix of list)
+            
             cpg_muts = Parallel(n_jobs=-1, verbose=0)(
                 delayed(parallel_predictor)(pop,cpg,get_matrix_run(cpg_matrix, i)) for i in range(n_cpg)
             )
@@ -201,13 +231,22 @@ class PopSizeCalculator(Operations):
             non_cpg_muts = Parallel(n_jobs=-1, verbose=0)(
                 delayed(parallel_predictor)(pop,non_cpg,get_matrix_run(non_cpg_matrix, i)) for i in range(n_non_cpg)
             )
+            
             cpgs.append(cpg_muts)
             non_cpgs.append(non_cpg_muts)
 
-        #take mean at eahc index across litsd, of lists of lists
-        
-        cpg_muts = [np.mean(vals) for vals in zip(*cpgs)]
-        non_cpg_muts = [np.mean(vals) for vals in zip(*non_cpgs)]
+            cpg_labels.append(cpg)
+            non_cpg_labels.append(non_cpg)
+
+        #take mean at each index across lits, of lists of lists-when using more than one cpg
+        if len(cpg_muts)>1:
+            cpg_muts = [np.mean(vals) for vals in zip(*cpgs)]
+        else:
+            cpg_muts=[np.mean(cpg_muts)]
+        if len(non_cpg_muts)>1:
+            non_cpg_muts = [np.mean(vals) for vals in zip(*non_cpgs)]
+        else:
+            non_cpg_muts=[np.mean(non_cpg_muts)]
         #self.write_logs(f'cpg_muts: {cpg_muts}, non_cpg_muts: {non_cpg_muts}')
         return cpg_muts, non_cpg_muts
     
@@ -226,10 +265,12 @@ class PopSizeCalculator(Operations):
             error = 1-model.score(x, y,sample_weight=weights)
 
 
-            intercept = model.intercept_
-            coeff = model.coef_[0]
-            self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
+            #intercept = model.intercept_
+            #coeff = model.coef_[0]
+            
+            # self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
             print(f'{pop}:{error}')
+            self.write_logs(f'{pop}:{error}')
             return error
         else:
             return 1 #max error 
@@ -248,10 +289,11 @@ class PopSizeCalculator(Operations):
             error = 1-model.score(x, y,sample_weight=weights)
 
 
-            intercept = model.intercept_
-            coeff = model.coef_[0]
-            self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
-            print(f'{pop}:{error}')
+            #intercept = model.intercept_
+            #coeff = model.coef_[0]
+            #self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
+            self.write_logs(f'{pop}:{error}')
+            
             return error
         else:
             return 1 #max error 
@@ -308,20 +350,70 @@ class PopSizeCalculator(Operations):
         print(f'best pop: {self.best_pop}, error: {self.min_error}')
         return
     
-    def calc_best_pop_regress_per_category(self):
+    def calc_best_pop_regress_per_category_brute(self):
 
         res = brute(
         self.get_error_regress_per_category,
         ((10_000, 800_000),),
         Ns=20,
         full_output=False,
-        workers=10
+        workers=1
         )
 
         self.best_pop = float(res)
         self.min_error = self.get_error_regress_per_category(res)
         print(f'best pop: {self.best_pop}, error: {self.min_error}')
         return
+    
+    def calc_best_pop_regress_per_category(self):
+        pop_min = 10_000
+        pop_max = 800_000
+
+        # Search resolutions, from coarse to exact integer N.
+        steps = [40_000, 4_000, 400, 40, 5, 1]
+
+        # Avoid recalculating an N already tested at another level.
+        error_cache = {}
+
+        def evaluate(pop):
+            pop = int(pop)
+
+            if pop not in error_cache:
+                error_cache[pop] = self.get_error_regress_per_category(pop)
+
+            return error_cache[pop]
+
+        lower = pop_min
+        upper = pop_max
+        best_pop = None
+
+        for step in steps:
+            candidates = list(range(lower, upper + 1, step))
+
+            # range() may not land exactly on the upper boundary.
+            if candidates[-1] != upper:
+                candidates.append(upper)
+
+            best_pop = min(candidates, key=evaluate)
+
+            print(
+                f"step={step}, best population={best_pop}, "
+                f"error={evaluate(best_pop)}"
+            )
+
+            # At the next resolution, search around this level's winner.
+            lower = max(pop_min, best_pop - step)
+            upper = min(pop_max, best_pop + step)
+
+        self.best_pop = best_pop
+        self.min_error = evaluate(best_pop)
+
+        print(
+            f"best pop: {self.best_pop}, "
+            f"error: {self.min_error}, "
+            f"unique evaluations: {len(error_cache)}"
+        )
+        
 
     def _plot_bins_lineplot(self, subs_1, subs_2, muts_1, muts_2, name):
         '''plot the bins'''

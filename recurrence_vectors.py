@@ -157,6 +157,8 @@ class ReccurenceVectors(Operations):
 
     def get_vector_item_from_best_guess(self, best_guess, weights_matrix, occs_matrix=None, muts_matrix=None):
         '''returns the vector item from the best guess
+        weights matrix=muts/occs
+        this step where i should collapse the different strands? -currently NOT DOING THIS
         '''
        
 
@@ -165,19 +167,20 @@ class ReccurenceVectors(Operations):
         #output dict with rate for each cpg and non cpg
 
         def get_weighted_mut(mutations):
-            
-            
-            
+            #assuming at this point best guess matrix is ALREADY COLLAPSED-CHECK
             rates={}
             occs={}
             for mut in mutations:
-                if str(mut) not in weights_matrix.index: mut = mut.get_rev_comp()
+                
+                if mut.tri not in best_guess.index: mut = mut.get_rev_comp()
                 
                 if mut.get_backwards().tri not in best_guess[mut.tri]:
                     back_tri = es.get_rev_comp(mut.get_backwards().tri)
-                else: back_tri = mut.get_backwards().tri
+                else:
+                    back_tri = mut.get_backwards().tri
+                
                 value = best_guess.loc[mut.tri][back_tri]
-                if mut.get_rev_comp()== mut.get_backwards(): continue
+                #if mut.get_rev_comp()== mut.get_backwards(): continue
                 
                 occs[mut]= occs_matrix[str(mut)]  
                 #totalocc += occs_matrix[str(mut)]/3  #add alt for each of 3 alts
@@ -188,9 +191,11 @@ class ReccurenceVectors(Operations):
         #self.genome_ratio_matrix() #get weights for occs when only allow mutations to one alt base
         muts_objects=es.get_mut_obj_list()
         muts_pool=[x for x in muts_objects if str(x) in self.mutations_pool]
+        self.write_logs(f'muts pool {muts_pool}' )
         all_rates, all_occs=get_weighted_mut(muts_pool)
         
         return all_rates, all_occs
+    
     def get_mrkv_corrected_vctrs(self, generations=None):
         if generations is None: generations = self.generations
         '''returns the best transition matrix for each group

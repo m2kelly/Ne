@@ -40,7 +40,7 @@ class Pipeline(Operations):
         self.cpg_muts = [x for x in all_cpgs if str(x) in self.occ_dict_raw['chr1'].index]
         
         #TESTING WITH ONE CATEORY
-        self.cpg_muts=[self.cpg_muts[0]]
+        #self.cpg_muts=[self.cpg_muts[0]]
         self.cpgs=self.cpg_muts
         
         self.smoothing_range = smoothing_range
@@ -103,7 +103,7 @@ class Pipeline(Operations):
             else:
                 self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates] #mut objects for best candidates,used in recc vectors
             self.write_logs(f'Best non cpg candidates: {self.best_candidates}')
-            self.indices=self.bin_vectors(beam,bins=50)
+            self.indices=self.bin_vectors(beam,bins=100)
             self.plot_bins()
             self.best_candidates=None #reset for next round, to choose by beam search again
 
@@ -249,21 +249,24 @@ class Pipeline(Operations):
             if not self.best_candidates: 
             #choose by beam search
                 self.cpg_non_cpg_dict={}
-                for cpg_mut in self.cpg_muts:
-                    beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
-                                        best_smoothing=1,
-                                        cpgs=[cpg_mut], non_cpg_pool=self.non_cpg_pool,
-                                        collapse=self.collapse,
-                                        muts_dict_raw=self.muts_dict_raw,
-                                        occ_dict_raw=self.occ_dict_raw,
-                                        cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff,
-                                        prefix=self.prefix, operations=self)
-            
-                    best_candidate = beam.get_best_candidates()
-                    self.cpg_non_cpg_dict[cpg_mut]=best_candidate
+                #for cpg_mut in self.cpg_muts:
+                beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
+                                    best_smoothing=1,
+                                    cpgs=self.cpg_muts, non_cpg_pool=self.non_cpg_pool,
+                                    collapse=self.collapse,
+                                    muts_dict_raw=self.muts_dict_raw,
+                                    occ_dict_raw=self.occ_dict_raw,
+                                    cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff,
+                                    prefix=self.prefix, operations=self)
+        
+                best_candidates = beam.get_best_candidates()
+                self.cpg_non_cpg_dict={self.cpg_muts[i]:best_candidates[i] for i in range(4)}
+                
+                self.write_logs(f'cpg_non_cpg_dict {self.cpg_non_cpg_dict}')
                 self.non_cpg_muts=[x for x in self.cpg_non_cpg_dict.values()]
-                print(f'best candidates: {self.best_candidates}')
+                
                 self.best_candidates=[str(x) for x in self.non_cpg_muts]
+                print(f'best candidates: {self.best_candidates}')
 
             else:
                 self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates.values()] #mut objects for best candidates,used in recc vectors
@@ -274,7 +277,7 @@ class Pipeline(Operations):
             
             self.write_logs('filtering and binning')
             #self.indices=self.bin_and_plot(cpg_remove=self.cpg_remove_percentage,cutoff=self.cutoff,non_cpg_labels=self.best_candidates)
-            self.indices=self.bin_vectors(beam,bins=50)
+            self.indices=self.bin_vectors(beam,bins=100)
             
             for bin in self.indices:
                 print(len(bin))
@@ -304,6 +307,8 @@ class Pipeline(Operations):
 
         
             self.write_logs('recurrence vectors calculated')
+            self.write_logs(rates_dict)
+            self.write_logs(rates_dict.keys())
             cpg_subs={key:value for key,value in rates_dict.items() if key in self.cpgs}
             non_cpg_subs={key:value for key,value in rates_dict.items() if key in self.non_cpg_muts}
 
