@@ -38,29 +38,16 @@ class PopSizeCalculator(Operations):
         self.directory = directory
 
         self.predictor = Predictor()
-        #self.subs_to_subs_per_gen()
-
-    def subs_to_subs_per_gen(self):
-        self.cpg_subs = [i/self.gens for i in self.cpg_subs]
-        self.non_cpg_subs = [i/self.gens for i in self.non_cpg_subs]
-        self.cpg_subs_bckwrds = [i/self.gens for i in self.cpg_subs_bckwrds]
-        self.non_cpg_subs_bckwrds = [i/self.gens for i in self.non_cpg_subs_bckwrds]
-
-    def base_error(self):
-
-        cpg_ratios = [i/self.cpg_subs[0] for i in self.cpg_subs]
-        non_cpg_ratios = [i/self.non_cpg_subs[0] for i in self.non_cpg_subs]
-        error = sum([abs(cpg_ratios[i] - non_cpg_ratios[i]) for i in range(len(cpg_ratios))])
-        error = abs(error/(len(cpg_ratios)-1))
-
-        return error
-
-    def get_muts(self, pop):
         
+#########2 allele model functions
+    def get_muts(self, pop):
+
+        '''
+        calculate cpg and non cpg muts for each category seperatly using 2 allele model '''
         # Parallelize the operation
         def parallel_predictor(subf, b, pop):
             try:
-                return self.predictor.get_mu(GPA(0, b, int(pop), mean_sub_rate=subf))
+                return self.predictor.get_mu_2_allele(GPA(0, b, int(pop), mean_sub_rate=subf))
             except Exception as e:
                 print(traceback.format_exc())
                 try:
@@ -81,9 +68,91 @@ class PopSizeCalculator(Operations):
         )
 
         return cpg_muts, non_cpg_muts
+
+    def get_error(self, pop):
+        '''
+        2 allele model 
+        calculate muts per inputted N guess
+        then get error in cpg/non cpg mut ratio'''
+        cpg_muts, non_cpg_muts = self.get_muts(pop)
+        if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
+            x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
+            y = np.array(cpg_muts)
+            weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
+            #sample_weight=weights
+            #fit_intercept=False
+            model = LinearRegression().fit(x, y,sample_weight=weights)
+            #R2  assumes mean centerong,not true for mut rate
+            error = 1-model.score(x, y,sample_weight=weights)
+
+
+            #intercept = model.intercept_
+            #coeff = model.coef_[0]
+            
+            # self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
+            print(f'{pop}:{error}')
+            self.write_logs(f'{pop}:{error}')
+            return error
+        else:
+            return 1 #max error 
+
+    def get_error_test(self, pop,allow_intcp=True):
     
-    def get_muts_per_cat(self, pop):
-        
+        cpg_muts, non_cpg_muts = self.get_muts(pop)
+        if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
+            x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
+            y = np.array(cpg_muts)
+            weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
+            #weights=[x for x in non_cpg_muts]
+            #,sample_weight=weights
+            if allow_intcp:
+                model = LinearRegression().fit(x, y,sample_weight=weights)
+                            #R2  assumes mean centerong,not true for mut rate
+                            #assume intcpt>=0 
+                if model.intercept_ > 0:
+                    error = 1-model.score(x, y,sample_weight=weights)
+                else:
+                    model_no_intcp = LinearRegression(fit_intercept=False).fit(x, y,sample_weight=weights)
+                    error = 1-model_no_intcp.score(x, y,sample_weight=weights)         
+            else:
+                model_no_intcp = LinearRegression(fit_intercept=False).fit(x, y,sample_weight=weights)
+                error = 1-model_no_intcp.score(x, y,sample_weight=weights) 
+
+            
+            print(f'{pop}:{error}')
+            return error
+        else:
+            return 1 #max error 
+
+    def calc_best_pop(self):
+        '''
+        2 allele model
+        find the best pop size by regression of cpg and non cpg mut rate for each N guess
+        runs one regression from the mean of all cpgs and mean of all non cpgs
+        runs a grid search
+        steps gives search resolution from coarse to exact'''
+            
+        res = brute(
+        self.get_error,
+        ((10_000, 800_000),),
+        Ns=20,
+        full_output=False,
+        workers=10
+        )
+
+        self.best_pop = float(res)
+        self.min_error = self.get_error(res)
+        print(f'best pop: {self.best_pop}, error: {self.min_error}')
+        return
+    
+
+##########4 alelle model functions           
+    def get_muts_per_cat(self, pop,take_mean=True):
+        '''
+        4 allele model
+        get the muts for each cpg and non cpg category in cpg_non_cpg_dict
+        if take_mean=True, return the mean of all cpgs and mean of all non cpgs, else return the list of muts for each category
+        '''
         # Parallelize the operation
         def parallel_predictor(pop,mut,sub_matrix,subf=0,b=0): #4aleles uses sub matrix not subf, b
             try:
@@ -94,6 +163,7 @@ class PopSizeCalculator(Operations):
 
             except Exception as e:
                 print(traceback.format_exc())
+                return np.inf
                 try:
                     return self.predictor.get_mu_scalar(GPA(0, b, int(pop), mean_sub_rate=subf))
                 except Exception as e:
@@ -196,97 +266,98 @@ class PopSizeCalculator(Operations):
         cpg_labels=[]
         non_cpg_labels=[]
         for cpg,non_cpg in self.cpg_non_cpg_dict.items():
-
+            
             if cpg in cpg_labels:
-                cpgs.append(cpgs[cpg_labels.index(cpg)])
+                cpgs.append(cpgs[cpg_labels.index(cpg)]) #already processed
             else:
                 cpgs.append(process_cat(cpg))
-
-            if non_cpg in non_cpg_labels:
-                #if already porcessed this mut category
-                non_cpgs.append(non_cpgs[non_cpg_labels.index(non_cpg)])
-            else:
-                #else process-find mu
-                non_cpgs.append(process_cat(non_cpg))
-
-            
-
-            #make 4 allele mut matrix for each cpg, non cpg context, need mu_frwd and mu_back for all alts at middle base
-            cpg_matrix=make_4allele_matrix(cpg.tri)
-            n_cpg=get_n_runs(cpg_matrix)
-
-            
-            non_cpg_matrix=make_4allele_matrix(non_cpg.tri)
-
-           
-            n_non_cpg=get_n_runs(non_cpg_matrix)
-
-            
-            #edit so input one rate in matrix at a time (now matrix of list)
-            
-            cpg_muts = Parallel(n_jobs=-1, verbose=0)(
-                delayed(parallel_predictor)(pop,cpg,get_matrix_run(cpg_matrix, i)) for i in range(n_cpg)
-            )
-
-            non_cpg_muts = Parallel(n_jobs=-1, verbose=0)(
-                delayed(parallel_predictor)(pop,non_cpg,get_matrix_run(non_cpg_matrix, i)) for i in range(n_non_cpg)
-            )
-            
-            cpgs.append(cpg_muts)
-            non_cpgs.append(non_cpg_muts)
-
             cpg_labels.append(cpg)
-            non_cpg_labels.append(non_cpg)
 
-        #take mean at each index across lits, of lists of lists-when using more than one cpg
-        if len(cpg_muts)>1:
-            cpg_muts = [np.mean(vals) for vals in zip(*cpgs)]
-        else:
-            cpg_muts=[np.mean(cpg_muts)]
-        if len(non_cpg_muts)>1:
-            non_cpg_muts = [np.mean(vals) for vals in zip(*non_cpgs)]
-        else:
-            non_cpg_muts=[np.mean(non_cpg_muts)]
-        #self.write_logs(f'cpg_muts: {cpg_muts}, non_cpg_muts: {non_cpg_muts}')
-        return cpg_muts, non_cpg_muts
-    
+            if type(non_cpg) is list:
+                non_cpg_list=non_cpg
+                for non_cpg in non_cpg_list:
+                    
+                    if non_cpg in non_cpg_labels:
+                        #if already porcessed this mut category
+                        non_cpgs.append(non_cpgs[non_cpg_labels.index(non_cpg)])
+                    else:
+                        #else process-find mu
+                        non_cpgs.append(process_cat(non_cpg))
+                    non_cpg_labels.append(non_cpg)
+            else:
+                if non_cpg in non_cpg_labels:
+                    #if already porcessed this mut category
+                    non_cpgs.append(non_cpgs[non_cpg_labels.index(non_cpg)])
+                else:
+                    #else process-find mu
+                    non_cpgs.append(process_cat(non_cpg))
+                non_cpg_labels.append(non_cpg)
 
-    def get_error(self, pop):
-    
-        cpg_muts, non_cpg_muts = self.get_muts(pop)
-        if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
-            x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
-            y = np.array(cpg_muts)
-            weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
-            #sample_weight=weights
-            #fit_intercept=False
-            model = LinearRegression().fit(x, y,sample_weight=weights)
-            #R2  assumes mean centerong,not true for mut rate
-            error = 1-model.score(x, y,sample_weight=weights)
-
-
-            #intercept = model.intercept_
-            #coeff = model.coef_[0]
             
-            # self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
-            print(f'{pop}:{error}')
-            self.write_logs(f'{pop}:{error}')
-            return error
+        #take mean at each index across lits, of lists of lists-when using more than one cpg
+        if take_mean:
+            if len(set(cpg_labels))>1:
+                cpg_muts = [np.mean(vals) for vals in zip(*cpgs)]
+            else:
+                cpg_muts=cpgs[0]
+            if len(set(non_cpg_labels))>1:
+                #take bin across categories
+                non_cpg_muts = [np.mean(vals) for vals in zip(*non_cpgs)]
+            else:
+                non_cpg_muts=non_cpgs[0]
+            #self.write_logs(f'cpg_muts: {cpg_muts}, non_cpg_muts: {non_cpg_muts}')
+            return cpg_muts, non_cpg_muts
         else:
-            return 1 #max error 
-        
+            return cpgs,non_cpgs
+     
     def get_error_regress_per_category(self, pop):
     
+        cpg_muts_lists, non_cpg_muts_lists = self.get_muts_per_cat(pop,take_mean=False)
+        total_error=0
+        for i in range(len(cpg_muts_lists)):
+            cpg_muts = cpg_muts_lists[i]
+            non_cpg_muts = non_cpg_muts_lists[i]
+        
+            if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
+                x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
+                y = np.array(cpg_muts)
+                weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
+                #sample_weight=weights
+                #fit_intercept=False
+                model = LinearRegression().fit(x, y,sample_weight=weights)
+                #R2  assumes mean centerong,not true for mut rate
+                error = 1-model.score(x, y,sample_weight=weights)
+                total_error+=error
+
+                #intercept = model.intercept_
+                #coeff = model.coef_[0]
+            else:
+                total_error+=10 #max error
+        self.write_log = f'pop: {pop}, error: {total_error}'
+        print(f'{pop}:{total_error}')
+        return total_error
+
+    def get_error_regress_once(self, pop):
+        '''
+        4 allele model
+        one regression fo rmean of cpg and mean of non cpg
+        infer N based on assuming constant cpg/non_cpg ratio'''
         cpg_muts, non_cpg_muts = self.get_muts_per_cat(pop)
         if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
             x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
             y = np.array(cpg_muts)
             weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
+            #weights=[x*x for x in non_cpg_muts]
             #sample_weight=weights
             #fit_intercept=False
-            model = LinearRegression(fit_intercept=False).fit(x, y,sample_weight=weights)
+            #model = LinearRegression().fit(x, y,sample_weight=weights)
             #R2  assumes mean centerong,not true for mut rate
-            error = 1-model.score(x, y,sample_weight=weights)
+            #assume intcpt>=0 
+            #if model.intercept_ > 0:
+                #error = 1-model.score(x, y,sample_weight=weights)
+            #else:
+            model_no_intcp = LinearRegression(fit_intercept=False).fit(x, y,sample_weight=weights)
+            error = 1-model_no_intcp.score(x, y,sample_weight=weights)         
 
 
             #intercept = model.intercept_
@@ -297,80 +368,69 @@ class PopSizeCalculator(Operations):
             return error
         else:
             return 1 #max error 
+              
+    def calc_best_pop_regress_once(self,pop_min=1_000, pop_max=800_000,steps=[40_000, 4_000, 1_000]):
+            
+            '''
+            4 allele model
+            find the best pop size by regression of cpg and non cpg mut rate for each N guess
+            runs one regression from the mean of all cpgs and mean of all non cpgs
+            runs a grid search
+            steps gives search resolution from coarse to exact'''
+    
+            
+            # Avoid recalculating an N already tested at another level.
+            error_cache = {}
+    
+            def evaluate(pop):
+                pop = int(pop)
+    
+                if pop not in error_cache:
+                    error_cache[pop] = self.get_error_regress_once(pop)
+    
+                return error_cache[pop]
+    
+            lower = pop_min
+            upper = pop_max
+            best_pop = None
+    
+            for step in steps:
+                candidates = list(range(lower, upper + 1, step))
+    
+                # range() may not land exactly on the upper boundary.
+                if candidates[-1] != upper:
+                    candidates.append(upper)
+    
+                best_pop = min(candidates, key=evaluate)
+    
+                self.write_logs(
+                    f"step={step}, best population={best_pop}, "
+                    f"error={evaluate(best_pop)}"
+                )
+    
+                # At the next resolution, search around this level's winner.
+                lower = max(pop_min, best_pop - step)
+                upper = min(pop_max, best_pop + step)
+    
+            self.best_pop = best_pop
+            self.min_error = evaluate(best_pop)
+    
+            self.write_logs(
+                f"best pop: {self.best_pop}, "
+                f"error: {self.min_error}, "
+                f"unique evaluations: {len(error_cache)}"
+            )
+            
+    def calc_best_pop_regress_per_category(self,pop_min=1_000, pop_max=800_000,steps=[40_000, 4_000, 1_000]):
+        '''
+        4 allele model
+        find the best pop size by regression of cpg and non cpg mut rate for each N guess
+        runs a regression per each cpg:non cpg list in cpg_non_cpg_dict
+        runs a grid search
+        steps gives search resolution from coarse to exact
+        '''
+            
         
-    def get_error_test(self, pop):
-    
-        cpg_muts, non_cpg_muts = self.get_muts(pop)
-        if np.isfinite(cpg_muts).all() and np.isfinite(non_cpg_muts).all():
-            x = np.array(non_cpg_muts).reshape((-1, 1)) # must be 2D
-            y = np.array(cpg_muts)
-            weights=range(1, len(non_cpg_muts) + 1) #weight by more mutable bins, as trust them more, and want to fit line based on them
-            #sample_weight=weights
-            #fit_intercept=Falsefit
-            model = LinearRegression(fit_intercept=False).fit(x, y,sample_weight=weights)
-            #R2  assumes mean centerong,not true for mut rate
-            error = 1-model.score(x, y,sample_weight=weights)
-
-
-            intercept = model.intercept_
-            coeff = model.coef_[0]
-            self.write_log = f'pop: {pop}, error: {error}, intercept: {intercept}, coeff: {coeff}\n'
-            print(f'{pop}:{error}')
-            return error
-        else:
-            return 1 #max error 
-        
-    
-
-    #standard method-quick quadratic convergence where possible
-    def calc_best_pop_local(self):
-        res = minimize_scalar(
-        self.get_error,
-        bracket=[50_000, 500_000],
-        method="brent",
-        options={"xtol": 1e-6}
-        )
-        self.best_pop = res.x
-        self.min_error = res.fun
-        print(f'best pop: {self.best_pop}, error: {self.min_error}')
-
-        #global optimiser
-    def calc_best_pop(self):
-
-        res = brute(
-        self.get_error,
-        ((10_000, 800_000),),
-        Ns=20,
-        full_output=False,
-        workers=10
-        )
-
-        self.best_pop = float(res)
-        self.min_error = self.get_error(res)
-        print(f'best pop: {self.best_pop}, error: {self.min_error}')
-        return
-    
-    def calc_best_pop_regress_per_category_brute(self):
-
-        res = brute(
-        self.get_error_regress_per_category,
-        ((10_000, 800_000),),
-        Ns=20,
-        full_output=False,
-        workers=1
-        )
-
-        self.best_pop = float(res)
-        self.min_error = self.get_error_regress_per_category(res)
-        print(f'best pop: {self.best_pop}, error: {self.min_error}')
-        return
-    
-    def calc_best_pop_regress_per_category(self):
-        pop_min = 10_000
-        pop_max = 800_000
-
-        # Search resolutions, from coarse to exact integer N.
-        steps = [40_000, 4_000, 400, 40, 5, 1]
 
         # Avoid recalculating an N already tested at another level.
         error_cache = {}
@@ -396,7 +456,7 @@ class PopSizeCalculator(Operations):
 
             best_pop = min(candidates, key=evaluate)
 
-            print(
+            self.write_logs(
                 f"step={step}, best population={best_pop}, "
                 f"error={evaluate(best_pop)}"
             )
@@ -408,65 +468,15 @@ class PopSizeCalculator(Operations):
         self.best_pop = best_pop
         self.min_error = evaluate(best_pop)
 
-        print(
+        self.write_logs(
             f"best pop: {self.best_pop}, "
             f"error: {self.min_error}, "
             f"unique evaluations: {len(error_cache)}"
         )
         
 
-    def _plot_bins_lineplot(self, subs_1, subs_2, muts_1, muts_2, name):
-        '''plot the bins'''
-        plt.clf()
-        fig, (ax1, ax2) = plt.subplots(1, 2)
-
-        ax1.plot(subs_1, label='CpG_subs', color='r')
-        ax1.plot(subs_2, label='nonCpG_subs', color='b')
-
-        index = np.arange(len(subs_1))
-        
-
-        #ax1.set_ylabel('Substitution Rate')
-        ax1.set_title('Normalised substitution Rates', loc='left')
-        ax1.legend()
-
-        ax1.plot(muts_1, label='CpG_muts', color='r')
-        ax1.plot(muts_2, label='nonCpG_muts', color='b')
-
-        ax2.set_title('Normalised mutation Rates', loc='left')
-        ax2.legend()
-
-        plt.savefig(name)
-
-    def _plot_bins(self, subs_1, subs_2, muts_1, muts_2, name):
-        '''plot the bins'''
-        plt.clf()
-        fig, (ax1, ax2) = plt.subplots(1, 2)
-
-        index = np.arange(len(subs_1))
-        bar_width = 0.35
-
-        rects1 = ax1.bar(index, subs_1, bar_width, color='r', label='CpG_subs')
-        rects2 = ax1.bar(index + bar_width, subs_2, bar_width,
-                        color='b', label='nonCpG_subs')
-
-        #ax1.set_ylabel('Substitution Rate')
-        ax1.set_title('Normalised substitution Rates', loc='left')
-        ax1.legend()
-
-        index = np.arange(len(muts_1))
-        bar_width = 0.35
-
-        rects1 = ax2.bar(index, muts_1, bar_width, color='r', label='CpG_muts')
-        rects2 = ax2.bar(index + bar_width, muts_2, bar_width,
-                        color='b', label='nonCpG_muts')
-
-        ax2.set_title('Normalised mutation Rates', loc='left')
-        ax2.legend()
-
-        plt.savefig(name)
-
-    def plot_regression(self,cpg_subs, non_cpg_subs, cpg_muts, non_cpg_muts, name_subs,name_muts):
+##########Plotting functions
+    def plot_regression(self,best_pop,cpg_subs, non_cpg_subs, cpg_muts, non_cpg_muts, name_subs,name_muts):
         '''plot the regression for muts and subs'''
         plt.clf()
         x = np.array(non_cpg_subs).reshape(-1, 1)
@@ -479,6 +489,7 @@ class PopSizeCalculator(Operations):
         y_fit = model.predict(x)
         plt.plot(x, y_fit, color='blue', label='Fit with intcp')
         plt.scatter(x,y)
+        plt.title(f'N={best_pop}')
         plt.xlabel('non CpG subs'); plt.ylabel('CpG subs')
         plt.legend()
         
@@ -494,13 +505,11 @@ class PopSizeCalculator(Operations):
         model = LinearRegression().fit(x, y)
         y_fit = model.predict(x)
         plt.plot(x, y_fit, color='blue', label='Fit with intcp')
-
+        plt.title(f'N={best_pop}')
         plt.scatter(x,y)
         plt.xlabel('non CpG muts'); plt.ylabel('CpG muts')
         plt.legend()
         plt.savefig(name_muts)
-
-        
 
     def plot_correction(self, best_pop=None):
 
@@ -514,44 +523,8 @@ class PopSizeCalculator(Operations):
         
         cpg_muts = np.array(cpg_muts); non_cpg_muts = np.array(non_cpg_muts)
 
-        self.plot_regression(cpg_subs, non_cpg_subs, cpg_muts, non_cpg_muts, f'{self.directory}/subs_regression.png', f'{self.directory}/muts_regression.png')
-        cpg_subs_by_mean = cpg_subs/mean(cpg_subs); non_cpg_subs_by_mean = non_cpg_subs/mean(non_cpg_subs)
-        cpg_muts_by_mean = cpg_muts/mean(cpg_muts); non_cpg_muts_by_mean = non_cpg_muts/mean(non_cpg_muts)
-
-        self._plot_bins(cpg_subs_by_mean, non_cpg_subs_by_mean, cpg_muts_by_mean, non_cpg_muts_by_mean, f'{self.directory}/best_pop_by_mean.png')
-        self._plot_bins_lineplot(cpg_subs_by_mean, non_cpg_subs_by_mean, cpg_muts_by_mean, non_cpg_muts_by_mean, f'{self.directory}/best_pop_by_mean_lineplot.png')
+        self.plot_regression(best_pop,cpg_subs, non_cpg_subs, cpg_muts, non_cpg_muts, f'{self.directory}/subs_regression.png', f'{self.directory}/muts_regression.png')
         
-        cpg_subs_by_zero = cpg_subs/cpg_subs[0]; non_cpg_subs_by_zero = non_cpg_subs/non_cpg_subs[0]
-        cpg_muts_by_zero = cpg_muts/cpg_muts[0]; non_cpg_muts_by_zero = non_cpg_muts/non_cpg_muts[0]
-
-        self._plot_bins(cpg_subs_by_zero, non_cpg_subs_by_zero, cpg_muts_by_zero, non_cpg_muts_by_zero, f'{self.directory}/best_pop_by_zero.png')
-
-        perc_change_cpg = [(cpg_muts[i]-cpg_subs[i])/cpg_subs[i] for i in range(len(cpg_subs))]
-        perc_change_noncpg = [(non_cpg_muts[i]-non_cpg_subs[i])/non_cpg_subs[i] for i in range(len(non_cpg_subs))]
 
         
-        self.write_logs(f'perc change mut-sub/sub CpG: {perc_change_cpg}')
-        
-        self.write_logs(f'perc change mut-sub/sum nonCpG: {perc_change_noncpg}')
-
-
-    def plot_error_points(self):
-        '''scattter plot of computed points'''
-        #clear plt
-        plt.clf()
-        plt.scatter(self.computed_points[0], self.computed_points[1])
-        plt.xlabel('Population Size')
-        plt.ylabel('Error')
-        plt.savefig(f'{self.directory}/error_points.png')
-
-        try:
-
-            plt.clf()
-            plt.scatter(self.computed_points[0], np.log10(np.array(self.computed_points[1])))
-            plt.xlabel('Population Size')
-            plt.ylabel('Error log10')
-            plt.savefig(f'{self.directory}/error_points_log.png')
-        except Exception as e:
-            print(f'Error in log plot: {e}')
-            
 

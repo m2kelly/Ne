@@ -24,6 +24,10 @@ class MarkovInfSites(Operations):
 
 
     def get_best_guess(self, initial_state:pd.Series, final_state:pd.DataFrame, inf_sites_guess:pd.DataFrame):
+        '''
+        function which does the main work of getting the best guess for the transition matrix
+        still hossams orginal function'''
+        
         plt.clf()
         initial_state_cp, final_state_cp, inf_sites_guess_cp = self.get_cupy_matrices(initial_state,
                                                                                       final_state,

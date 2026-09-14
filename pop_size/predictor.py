@@ -25,7 +25,7 @@ log10 = lambda x: np.log10(x) if x > 0 else 0
 class Predictor():
 
     def __init__(self):
-        self.stiching_point = 10**4
+        self.stiching_point = 1
         self.per_pop_linear_regression = {}
         self.self_train()
 
@@ -120,18 +120,19 @@ class Predictor():
     def get_sub_rate(self, point):
 
         #if point.mue_frwrd * point.pop_size <= 0.001:
-        if point.mue_frwrd * point.pop_size <= 0.00001 and point.pop_size > self.stiching_point:
+        #if point.mue_frwrd * point.pop_size <= 0.00001 and point.pop_size > self.stiching_point:
             #print('regression')
-            return self.get_sub_rate_regression(point)
+            #return self.get_sub_rate_regression(point)
 
         if point.pop_size < self.stiching_point:
             return self.get_sub_rate_exact(point)
         else:
             try:
                 if point.selection_coeff==0:
-                    return self.get_sub_rate_diffusion_4_allele_renewal(point) #4 allele model
-                    #return self.get_sub_rate_diffusion_beta(point) #2allele model
+                    #return self.get_sub_rate_diffusion_4_allele_renewal(point) #4 allele model
+                    return self.get_sub_rate_diffusion_beta(point) #2allele model
                 else:
+                    print('not beta 2 allele')
                     #return self.get_sub_rate_diffusion(point)
                     return self.get_sub_rate_diffusion_4_allele_renewal(point)
             except Exception as e:
@@ -526,11 +527,60 @@ class Predictor():
 
         return 1.0 / (4 * N * B_ab * alpha0)
     
-    def get_sub_rate_diffusion_4_allele_renewal_slow(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
+  
+    def get_sub_rate_diffusion_4_allele_renewal(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
+            
         '''
-        was trying to derive by changing mean time to path
-        but understimating, as not account for ossibility from sub to other allele then to sub of interet, also O(mu)'''
+        O(mu) approximation to 4 allele mutation rates
+        input:mu_matrix=dict of dicts {ref:{alt:x}}'''
+        #pre calculations to inc speed
+        N = point.pop_size
+        M = 2.0 * N
+        x0 = 1.0 / M
+
+        # Precompute mutation matrix and scaled mutation matrix
+
         
+
+        theta_lookup = {
+            x: {y: M * mu_matrix[x][y] for y in alleles}
+            for x in alleles
+        }
+
+        outward_rate = {
+            x: sum(mu_matrix[x][y] for y in alleles if y != x)
+            for x in alleles
+        }
+
+        outward_theta = {
+            x: M * outward_rate[x]
+            for x in alleles
+        }
+
+        neutral_alpha_x0 = -2.0 * (
+            x0 * np.log(x0)
+            + (1.0 - x0) * np.log1p(-x0)
+        )
+
+        # occupation time of intermediate lineage
+        occ_x = -2.0 * (1.0 - x0) * np.log1p(-x0)
+
+        # occupation time of ancestral background
+        occ_a = -2.0 * x0 * np.log(x0)
+        
+        
+        def get_mu(x, y):
+            return mu_matrix[x][y]
+
+
+        def get_theta(x, y):
+            return theta_lookup[x][y]
+
+
+
+
+        def get_outward_theta(x):
+            return outward_theta[x]
         # caching to increase speed
         # Scope the cache to the current population size so it doesn't grow
         # unbounded across many different N guesses (e.g. brute-force search).
@@ -549,58 +599,153 @@ class Predictor():
         def cache_key(*vals):
             return tuple(round(float(v), 16) for v in vals)
 
+        def occupation_times(x, u1, u2):
+            """
+            Mutation-aware occupation times during an a/x segregating episode.
 
-        # inner functions
-        def get_mu(x, y):
-            """
-            Per-generation mutation rate x -> y.
-            
-            """
-            
-            return mu_matrix[x][y]
+            Returns:
+                occ_x : integral y * G(x0,y) dy
+                occ_a : integral (1-y) * G(x0,y) dy
 
-        def get_s(x):
+            Should satisfy:
+                occ_x + occ_a = alpha(x, 0, u1, u2)
             """
-            Allele fitness/selection value.
-            Edit this line if your selection coefficients are stored differently.
-            """
-            if hasattr(point, "selection"):
-                return 
-            return 0.0
 
-        def psi(mu, sigma, u1, u2):
-            """
-            ψ(μ) = exp(-2 σ μ) * μ^{-2u1} * (1-μ)^{-2u2}
-            """
-            # Avoid singularities at endpoints
-            if mu <= 0.0:
-                return 0.0
-            if mu >= 1.0:
-                return 0.0
+            # Neutral shortcut
+            if abs(u1) < 1e-15 and abs(u2) < 1e-15:
 
-            return (
-                np.exp(-2.0 * sigma * mu)
-                * (mu ** (-2.0 * u1))
-                * ((1.0 - mu) ** (-2.0 * u2))
+                occ_x = (
+                    -2.0
+                    * (1.0 - x)
+                    * np.log1p(-x)
+                )
+
+                occ_a = (
+                    -2.0
+                    * x
+                    * np.log(x)
+                )
+
+                return occ_x, occ_a
+
+            aa = 1.0 - 2.0 * u1
+            bb = 1.0 - 2.0 * u2
+
+            if aa <= 0.0 or bb <= 0.0:
+                return np.nan, np.nan
+
+            beta_ab = beta(aa, bb)
+            Ix = betainc(aa, bb, x)
+
+            eps = 1e-12
+
+            def denom(y):
+                return (
+                    y
+                    * (1.0 - y)
+                    * y**(-2.0 * u1)
+                    * (1.0 - y)**(-2.0 * u2)
+                )
+
+            def green(y):
+
+                Iy = betainc(
+                    aa,
+                    bb,
+                    y
+                )
+
+                if y <= x:
+
+                    return (
+                        2.0
+                        * beta_ab
+                        * Iy
+                        * (1.0 - Ix)
+                        / denom(y)
+                    )
+
+                else:
+
+                    return (
+                        2.0
+                        * beta_ab
+                        * Ix
+                        * (1.0 - Iy)
+                        / denom(y)
+                    )
+
+            def integrate(func):
+
+                total = 0.0
+
+                if x > eps:
+                    value, _ = I(
+                        func,
+                        eps,
+                        x,
+                        epsabs=1e-9,
+                        epsrel=1e-7,
+                        limit=100,
+                    )
+                    total += value
+
+                if x < 1.0 - eps:
+                    value, _ = I(
+                        func,
+                        x,
+                        1.0 - eps,
+                        epsabs=1e-9,
+                        epsrel=1e-7,
+                        limit=100,
+                    )
+                    total += value
+
+                return total
+
+            occ_x = integrate(
+                lambda y: y * green(y)
             )
 
-        def psi_den(sigma, u1, u2):
-            """
-            Cached denominator ∫0^1 ψ(μ)dμ.
-            """
-            key = cache_key(sigma, u1, u2)
+            occ_a = integrate(
+                lambda y: (1.0 - y) * green(y)
+            )
 
-            if key not in cache["den"]:
-                den, _ = I(psi, 0.0, 1.0, args=(sigma, u1, u2))
-                cache["den"][key] = den
-
-            return cache["den"][key]
+            return occ_x, occ_a
         
+        def prob_not_x_occupation(
+            a,
+            x,
+            b
+        ):
+
+            theta_ax = get_theta(a, x)
+
+            # Use the same mutation process as the a/x excursion.
+            theta_x_out = get_outward_theta(x)
+
+            occ_x_full, occ_a_full = occupation_times(
+                x0,
+                theta_ax,
+                theta_x_out
+            )
+
+            supply = M**2 * (
+                get_mu(x, b) * occ_x_full
+                +
+                get_mu(a, b) * occ_a_full
+            )
+
+            return (
+                1.0
+                - math.exp(-supply / M)
+            )
+                
         def phi(x, sigma, u1, u2):
             """
-            Cached φ(x) = ∫0^x ψ(μ)dμ / ∫0^1 ψ(μ)dμ.
+            Cached beta-form φ(x), valid for sigma = 0.
             """
-            key = cache_key(x, sigma, u1, u2)
+            key = cache_key(x, u1, u2)
 
             if key not in cache["phi"]:
                 if x <= 0.0:
@@ -608,13 +753,27 @@ class Predictor():
                 elif x >= 1.0:
                     cache["phi"][key] = 1.0
                 else:
-                    num, _ = I(psi, 0.0, x, args=(sigma, u1, u2))
-                    den = psi_den(sigma, u1, u2)
-                    cache["phi"][key] = num / den
+                    aa = 1.0 - 2.0 * u1
+                    bb = 1.0 - 2.0 * u2
+
+                    if aa <= 0.0 or bb <= 0.0:
+                        cache["phi"][key] = np.nan
+                    else:
+                        cache["phi"][key] = betainc(aa, bb, x)
 
             return cache["phi"][key]
         
-        def prob_not_x(mu_xb,mu_ab):
+        
+            
+        def prob_not_x(mu_xb, mu_ab):
+            """
+            Expected number of second mutations to b that arise during a neutral
+            a/x segregating episode and eventually fix.
+
+            raw supply is M**2 * (...), then multiply by p_fix = 1/M,
+            giving M * (...).
+            """
+
             '''E(rate b|X mut freq 1/2N) - samll correction term for 3 alleles
             while x lineage is rising or fixing can get second mutation withewr x->b or a->b
             assume second mutation has prob 1/2N of fixing
@@ -622,7 +781,7 @@ class Predictor():
             M mu_xb M x_t+M mu_ab M (1-x_t)
             Then take expectation over t
             gives expected rate of supply, then multiply by pfix 1/M
-            '''
+            
 
             # raw supply would be M**2 * (...).
             # multiply by p_fix = 1/M, giving M * (...).
@@ -630,158 +789,353 @@ class Predictor():
             p_ab=-2*M*mu_ab*(1/(2*N))*math.log(1/(2*N))
             
             return p_xb+p_ab
+            '''
+            supply_prob= M**2 * (
+                mu_xb * occ_x
+                + mu_ab * occ_a)
+            #return supply_prob / M
+            return (1-math.exp(-supply_prob/M))
 
-        def phi_prime(x, sigma, u1, u2):
-            """
-            Cached φ'(x) = ψ(x) / ∫0^1 ψ(μ)dμ.
-            """
-            key = cache_key(x, sigma, u1, u2)
-
-            if key not in cache["phi_prime"]:
-                den = psi_den(sigma, u1, u2)
-                cache["phi_prime"][key] = psi(x, sigma, u1, u2) / den
-
-            return cache["phi_prime"][key]
-
-        def green(x, y, sigma, u1, u2):
-            """
-            Killed Green function for absorption at 0 or 1. Starting at x
-            """
-            if y <= 0.0 or y >= 1.0:
-                return 0.0
-
-            g2 = y * (1.0 - y)
-            phix = phi(x, sigma, u1, u2)
-            phiy = phi(y, sigma, u1, u2)
-            phipy = phi_prime(y, sigma, u1, u2)
-
-            if x < y:
-                return 2.0 * phix * (1.0 - phiy) / (g2 * phipy)
-            else:
-                return 2.0 * (1.0 - phix) * phiy / (g2 * phipy)
+        
 
         def alpha(x, sigma, u1, u2):
             """
             Cached α(x) = ∫0^1 G(x,y)dy.
-            Mean absorption time in diffusion units.
+            greens function with backward mutations killing at 0,1
+
+            Beta-form version, valid for sigma = 0.
             """
-            key = cache_key(x, sigma, u1, u2)
+            key = cache_key(x, u1, u2)
 
             if key not in cache["alpha"]:
+
+                # neutral shortcut
+                if abs(u1) < 1e-15 and abs(u2) < 1e-15:
+                    cache["alpha"][key] = neutral_alpha_x0
+                    return cache["alpha"][key]
+
+                aa = 1.0 - 2.0 * u1
+                bb = 1.0 - 2.0 * u2
+
+                if aa <= 0.0 or bb <= 0.0:
+                    cache["alpha"][key] = np.nan
+                    return cache["alpha"][key]
+
+                beta_ab = beta(aa, bb)
+                Ix = betainc(aa, bb, x)
+
                 eps = 1e-12
+
+                def denom(y):
+                    return (
+                        y * (1.0 - y)
+                        * (y ** (-2.0 * u1))
+                        * ((1.0 - y) ** (-2.0 * u2))
+                    )
+
+                def green_left(y):
+                    Iy = betainc(aa, bb, y)
+                    return 2.0 * beta_ab * Iy * (1.0 - Ix) / denom(y)
+
+                def green_right(y):
+                    Iy = betainc(aa, bb, y)
+                    return 2.0 * beta_ab * Ix * (1.0 - Iy) / denom(y)
 
                 left = 0.0
                 right = 0.0
 
                 if x > eps:
                     left, _ = I(
-                        lambda y: green(x, y, sigma, u1, u2),
+                        green_left,
                         eps,
                         x,
+                        epsabs=1e-9,
+                        epsrel=1e-7,
+                        limit=100,
                     )
 
                 if x < 1.0 - eps:
                     right, _ = I(
-                        lambda y: green(x, y, sigma, u1, u2),
+                        green_right,
                         x,
                         1.0 - eps,
+                        epsabs=1e-9,
+                        epsrel=1e-7,
+                        limit=100,
                     )
 
                 cache["alpha"][key] = left + right
 
             return cache["alpha"][key]
 
-        def neutral_alpha(x):
+        def effective_theta_into_target(a, b, escape_weight):
             """
-            Neutral mean time to loss or fixation in diffusion units.
-            Generator: 0.5 * x * (1-x) * f''(x)
+            Effective forward scaled mutation rate into target b during an a->b
+            collapsed diffusion.
             """
-            if x <= 0.0 or x >= 1.0:
+
+            occ_weights = {}
+
+            # occupancy of source allele a during the direct a/b excursion
+            occ_b, occ_a = occupation_times(
+                x0,
+                get_theta(a, b),
+                get_outward_theta(b)
+            )
+            occ_weights[a] = occ_a
+
+            # occupancy of third alleles j during their own a/j excursions
+            for j in alleles:
+                if j == a or j == b:
+                    continue
+
+                if escape_weight[j] <= 0.0:
+                    continue
+
+                occ_j, occ_a_j = occupation_times(
+                    x0,
+                    get_theta(a, j),
+                    get_outward_theta(j)
+                )
+
+                occ_weights[j] = escape_weight[j] * occ_j
+
+            total_occ = sum(occ_weights.values())
+
+            if total_occ <= 0.0:
+                return get_theta(a, b)
+
+            mu_eff = sum(
+                occ_weights[j] * get_mu(j, b)
+                for j in occ_weights
+            ) / total_occ
+
+            return M * mu_eff
+        
+        def calc_rate(a, b):
+
+            mu_ab = get_mu(a, b)
+
+            if mu_ab <= 0.0:
                 return 0.0
 
-            return -2.0 * (
-                x * np.log(x) +
-                (1.0 - x) * np.log1p(-x)
+            # ============================================================
+            # 1. Exact probability of leaving fixed state a in one
+            #    Wright-Fisher generation
+            # ============================================================
+
+            mu_a_out = outward_rate[a]
+
+            if mu_a_out <= 0.0:
+                return 0.0
+
+            # Exact Bernoulli version:
+            #
+            #     1 - (1 - mu_out)^M
+            #
+            # expm1/log1p is more numerically stable.
+            p_leave_a = -np.expm1(
+                M * np.log1p(-mu_a_out)
             )
 
-        def edge_params(x, y):
-            """
-            Parameters for edge x -> y.
-            Coordinate is frequency of y:
-                0 = fixed x
-                1 = fixed y
-            """
-            mu_xy = get_mu(x, y)
-            mu_yx = get_mu(y, x)
+            # Conditional on an escape, assign the initiating edge
+            # according to its relative mutation rate.
+            #
+            # These replace theta_ac in the renewal numerator/denominator.
+            escape_weight = {
+                c: (
+                    p_leave_a
+                    * get_mu(a, c)
+                    / mu_a_out
+                )
+                if c != a
+                else 0.0
+                for c in alleles
+            }
 
-            theta_xy = M * mu_xy
-            theta_yx = M * mu_yx
+            
+            # ============================================================
+            # 2. Direct a -> b route
+            # ============================================================
 
-            sigma_xy = M * (get_s(y) - get_s(x))
+            #effective_theta_into_target(a, b, escape_weight)
+            #get_theta(a,b)
+            phi_ab_x0 = phi(
+                x0,
+                0.0,
+                get_theta(a,b),
+                get_outward_theta(b)
+            )
 
-            return theta_xy, theta_yx, sigma_xy
-        
-        def get_outward_rate(x):
-            rate=0
-            for y in alleles:
-                if x==y: continue
-                rate+=get_mu(x,y)
-            return rate
+            numerator = (
+                escape_weight[b]
+                * phi_ab_x0
+            )
 
+            # ============================================================
+            # 3. Renewal duration
+            # ============================================================
 
-        
-        def calc_rate(a,b):
-            # numerator: theta_ab * phi_ab(1/M)
-            theta_ab, theta_ba, sigma_ab = edge_params(a, b)
+            denominator_extra = 0.0
+
+            for c in alleles:
+
+                if c == a:
+                    continue
+
+                if escape_weight[c] <= 0.0:
+                    continue
+
+                alpha_ac = alpha(
+                    x0,
+                    0.0,
+                    get_theta(a,c),
+                    get_outward_theta(c)
+                )
+
+                denominator_extra += (
+                    escape_weight[c]
+                    * alpha_ac
+                )
+
+            # ============================================================
+            # 4. Indirect routes a -> j -> b
+            # ============================================================
+
+            for j in alleles:
+
+                if j == a or j == b:
+                    continue
+
+                if escape_weight[j] <= 0.0:
+                    continue
+
+                
+                #numerator += (get_theta(a, j)* prob_not_x_occupation(a,j,b))  
+                # Mutation-aware occupation of the a/j episode.
+                #
+                # IMPORTANT:
+                # use the same recurrent mutation process as alpha().
+                
+                occ_j, occ_a = occupation_times(
+                    x0,
+                    get_theta(a,j),
+                    get_outward_theta(j)
+                )
+                
+
+                # Expected number of new b mutation origins generated
+                # during the a/j episode.
+                supply_b = M**2 * (
+                    get_mu(j, b) * occ_j
+                    +
+                    get_mu(a, b) * occ_a
+                )
+
+                # --------------------------------------------------------
+                # Fixation probability of ONE supplied b mutant.
+                #
+                # Set forward mutation INTO b to zero here because
+                # supply_b has already explicitly counted recurrent
+                # origins of b.
+                #
+                # We retain mutation OUT OF b.
+                # --------------------------------------------------------
+
+                pfix_single_b = phi(
+                    x0,
+                    0.0,
+                    0.0,
+                    get_outward_theta(b)
+                )
+
+                # Probability >=1 of the supplied b copies succeeds.
+                p_indirect_b = -np.expm1(
+                    -supply_b * pfix_single_b
+                )
+
+                numerator += (
+                    escape_weight[j]
+                    * p_indirect_b
+                )
+                
+
+            # ============================================================
+            # 5. Renewal rate
+            # ============================================================
+
+            Q_ab = (
+                numerator
+                /
+                (
+                    1.0
+                    + M * denominator_extra
+                )
+            )
+
+            return Q_ab
+
+        def calc_rate_supply_Mmu(a, b):
+            theta_ab = get_theta(a, b)
 
             if theta_ab <= 0.0:
                 return 0.0
 
-            #only allow first order mutations
-            #prob of fixation
-            phi_ab_x0 = phi(x0, sigma_ab, theta_ab, M*get_outward_rate(b))
+            # beta version assumes sigma = 0
+            sigma_ab = 0.0
 
-            
-            # denominator: 1 + M * sum_{c != a} theta_ac * alpha_ac(1/M)
+            phi_ab_x0 = phi(
+                x0,
+                sigma_ab,
+                theta_ab,
+                get_outward_theta(b)
+            )
+
+            numerator = theta_ab * phi_ab_x0
+
             denominator_extra = 0.0
-            lambda_a=0
+
             for c in alleles:
                 if c == a:
                     continue
 
-                theta_ac, theta_ca, sigma_ac = edge_params(a, c)
-                if c==b:
-                    #then can use full expected time to loss or fixation
-                    if theta_ac <= 0.0:continue
-                    alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, M*get_outward_rate(c))
-                    denominator_extra += theta_ac * alpha_ac_x0
+                theta_ac = get_theta(a, c)
+
+                if theta_ac <= 0.0:
                     continue
-                #else approximate with standard time to fixation
-                lambda_a+=theta_ac
-                #using outward_c will over inflate rate of extinction->denomenator larger
-                #alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, theta_ca)
-                #alpha_ac_x0 = alpha(x0, sigma_ac, theta_ac, get_outward_rate(c))
-                #alpha_ac_x0 = alpha(x0, sigma_ac, 0, 0)
-                
-                alpha_ac_x0=neutral_alpha(x0)
-                #print(theta_ac)
-                
+
+                if c == b:
+                    alpha_ac_x0 = alpha(
+                        x0,
+                        0.0,
+                        theta_ac,
+                        get_outward_theta(c)
+                    )
+                else:
+                    #alpha_ac_x0 = neutral_alpha_x0
+                    #trying using full alpha for intermediate allele.
+                    alpha_ac_x0 = alpha(x0,0.0,theta_ac,get_outward_theta(c))
+
                 denominator_extra += theta_ac * alpha_ac_x0
 
-            numerator = theta_ab * phi_ab_x0
-            
-            #prob of fixation of b given first mutation not to b
+            # second-order prob of fixation through intermediate allele correction
             for j in alleles:
-                if a==j: continue
-                if b==j: continue
-                #M*get_mu(a,j)*
-                #mut supply N*muaj *prob of fixation
-                prob=M*get_mu(a,j)*prob_not_x(get_mu(j,b),get_mu(a,b))
-                
-                numerator+=prob
+                if j == a:
+                    continue
+                if j == b:
+                    continue
 
-            #numerator = lambda_a * phi_ab_x0
+                #full greens function occupancy time for intermediate alleles
+                numerator += (
+                    get_theta(a, j)
+                    * prob_not_x_occupation(a,j,b))    
 
+                '''
+                numerator += get_theta(a, j) * prob_not_x(
+                    get_mu(j, b),
+                    get_mu(a, b)
+                )
+                '''
 
             Qedge_ab = numerator / (1.0 + M * denominator_extra)
 
@@ -809,10 +1163,9 @@ class Predictor():
                 #Qedge[x][x] = -sum(Qedge[x][y] for y in alleles if y != x)
 
             return Qedge
+          
         
-
-        
-    def get_sub_rate_diffusion_4_allele_renewal(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
+    def get_sub_rate_diffusion_4_allele_renewal_current_first_order_occupation(self, point, mu_matrix,alleles=("A", "C", "G", "T"),all_rates=True,a=None, b=None):
         
         '''
         O(mu) approximation to 4 allele mutation rates
@@ -944,11 +1297,11 @@ class Predictor():
             
             return p_xb+p_ab
             '''
-
-            return M * (
+            supply_prob= M**2 * (
                 mu_xb * occ_x
-                + mu_ab * occ_a
-            )
+                + mu_ab * occ_a)
+            #return supply_prob / M
+            return (1-math.exp(-supply_prob/M))
 
         
 
@@ -1075,7 +1428,9 @@ class Predictor():
                         get_outward_theta(c)
                     )
                 else:
-                    alpha_ac_x0 = neutral_alpha_x0
+                    #alpha_ac_x0 = neutral_alpha_x0
+                    #trying using full alpha for intermediate allele.
+                    alpha_ac_x0 = alpha(x0,0.0,theta_ac,get_outward_theta(c))
 
                 denominator_extra += theta_ac * alpha_ac_x0
 

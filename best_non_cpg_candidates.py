@@ -10,8 +10,6 @@ from .base_operations import Operations
 import numpy as np
 import matplotlib.pyplot as plt
 
-from scipy.stats import gaussian_kde
-from scipy.ndimage import gaussian_filter1d
 
 #maria addition to try classical beam search (allowing addition, removal and replacement)
 class BestNonCpGCandidatesBeam(Operations):
@@ -51,73 +49,14 @@ class BestNonCpGCandidatesBeam(Operations):
         group=[str(m) for m in group]
         non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
         
-        '''function to remove zero bins and calculate kendall tau correlations'''
-        '''
-        cpg_vector, non_cpg_vector = es.condition_muts(
-            muts_vector,
-            occ_vector,
-            self.cpg_muts,
-            group
-        )
-        '''
+
         tau = kendalltau(cpg_vector, non_cpg_vector)[0]
 
         if np.isnan(tau):
             return -1
 
         return round(tau, 5)
-    
-    def score_group_linear_regression(self, group, occ_vector, muts_vector):
-        '''function to remove zero bins and calculate R^2 for linear regression through origin'''
-        cpg_muts=[str(m) for m in self.cpg_muts]
-        cpg_vector=muts_vector.loc[cpg_muts,:].sum() / occ_vector.loc[cpg_muts,:].sum()
-        
 
-        group=[str(m) for m in group]
-        non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
-        
-        x=np.array(non_cpg_vector).reshape((-1, 1)) # must be 2D
-        y=np.array(cpg_vector)
-        #weights=1/(1+y) #weight more the points with low mutation rates, as they are less affected by recurrence, and more informative of the underlying mutability, as not saturated
-       
-        model = LinearRegression().fit(x, y)
-        error=model.score(x, y)
-        #error = model.score(x, y,sample_weight=weights)
-        
-       
-        if np.isnan(error):
-            return -1
-
-        return round(error, 5)
-    
-    def plot_group_linear_regression(self, group, occ_vector, muts_vector):
-        '''function to remove zero bins and calculate R^2 for linear regression through origin'''
-        cpg_muts=[str(m) for m in self.cpg_muts]
-        cpg_vector=muts_vector.loc[cpg_muts,:].sum() / occ_vector.loc[cpg_muts,:].sum()
-        
-
-        group=[str(m) for m in group]
-        non_cpg_vector=muts_vector.loc[group,:].sum() / occ_vector.loc[group,:].sum()
-        
-        x=np.array(non_cpg_vector).reshape((-1, 1)) # must be 2D
-        y=np.array(cpg_vector)
-        weights=1/(1+y)**2 #weight more the points with low mutation rates, as they are less affected by recurrence, and more informative of the underlying mutability, as not saturated
-       
-        model = LinearRegression(fit_intercept=False).fit(x, y, sample_weight=weights)
-        error = model.score(x, y,sample_weight=weights)
-        
-        plt.clf()
-        plt.scatter(x, y, color='blue', alpha=0.1, label='Data points')
-        plt.plot(x, model.predict(x), color='red', label=f'no intercept (R^2={error:.2f}),coef={model.coef_[0]:.2f}')
-        plt.xlabel('Non-CpG Mutation Rate')
-        plt.ylabel('CpG Mutation Rate')
-        plt.title('Linear Regression of CpG vs Non-CpG Mutation Rates')
-        plt.legend()
-        plt.savefig(f'{self.prefix}best_cpg_vs_non_cpg.png')
-        
-        return
-
-        
 
     def generate_neighbors(self, group):
         '''from a list of categories generate all distance one neighbour groups
@@ -138,7 +77,7 @@ class BestNonCpGCandidatesBeam(Operations):
                     [m for m in group if m != mut]
                 )
 
-        # SWAP
+        # SWAP-optional
         '''
         for removed in group:
             reduced = [m for m in group if m != removed]
@@ -153,8 +92,6 @@ class BestNonCpGCandidatesBeam(Operations):
         return neighbors
 
     @staticmethod
-    
-    #reindex these then remove again?
     def sort_by_cpg_non_cpg_random(cpg,non_cpg):
         print('chosing cpg, non cpg orders')
         '''
@@ -203,6 +140,8 @@ class BestNonCpGCandidatesBeam(Operations):
     @staticmethod
     def remove_based_on_rank(cpg_vector,non_cpg_vector,cutoff=0.9):
 
+        '''function to remove bins based on rank difference between cpg and non cpg rates'''
+
         cpg_rank = cpg_vector.rank(method='average')
         non_cpg_rank = non_cpg_vector.rank(method='average')
 
@@ -219,7 +158,13 @@ class BestNonCpGCandidatesBeam(Operations):
     
     
     def filter_dicts_low_mut_rank(self,occ_dict,muts_dict,cpg_labels=None,non_cpg_labels=None,cpg_remove_percentage=0.0,cutoff=0.9):
-        '''function to filter the muts and occ dicts based on the cpg and non cpg labels'''
+        '''function to filter the muts and occ dicts based on the cpg and non cpg labels
+        used after selecting the best non cpg candidates
+        remove sparse bins with occ<100k (max=300k)
+        sort bins based on cpg and non cpg rates
+        keep only cutoff percentage of bins with smallest rank difference between cpg list and non cpg list ranks
+        then remove the cpg_remove_percentage least mutable bins based on randomly sorting cpg and non cpg
+        return ordered list of indices to be kept'''
         occ_dict = deepcopy(occ_dict)
         muts_dict = deepcopy(muts_dict)
         #dict must actually be vector
@@ -245,7 +190,6 @@ class BestNonCpGCandidatesBeam(Operations):
 
 
         #non cpg pooled rate
-        print(muts_vector.index)
         non_cpg_muts = muts_vector.loc[non_cpg_labels].sum()
         non_cpg_occs_copy = occ_vector.loc[non_cpg_labels].sum()
         non_cpg_rate = non_cpg_muts / non_cpg_occs_copy
@@ -260,38 +204,32 @@ class BestNonCpGCandidatesBeam(Operations):
         #sorting based on cpg and non-cpg rates
         sorted_indexes=self.sort_by_cpg_non_cpg_random(cpg_rate,non_cpg_rate)
 
-        #test: sorting by cpg
-        #sorted_indexes=list(cpg_rate.sort_values(ascending=True).index)
-
+        
         to_keep_more_mutable=sorted_indexes[int(len(sorted_indexes)*cpg_remove_percentage):]
 
-
-        #remove most mutable bins as affected by recurrence
-        #remove_high_indices=self.remove_based_on_rank_and_low_mut(cpg_rate,non_cpg_rate,cutoff=0.99999,cpg_remove=0.6)
-        #keep_indices=list(set(high_keep_indices) - set(remove_high_indices) )
-        #print(len(keep_indices))
         return to_keep_more_mutable
     
     
    
-    def filter_low_mut(self,occ_dict,muts_dict,remove_low,cutoff):
+    def filter_low_mut(self,occ_dict,muts_dict,remove_low):
         print(f'remove low = {remove_low}')
-        '''keep bins in the intersection of cpg>remove low & non cpg>remove low
+        '''
+        removing low mutability bins (from cpg remove percentage)
+        based on summed mutabiltiy across all cpg and non cpg categories-aka before chosing categories
+        keep bins in the intersection of cpg>remove low & non cpg>remove low
+        first remove bins with zero mutability
         '''
         occ_vector=es.rename_cols(occ_dict)
         muts_vector=es.rename_cols(muts_dict)
         
         print(f"starting bin length: {len(occ_vector.columns)}")
         
-        #filtering based on low occ
-        #mask = occ_vector.sum(axis=0) >= 100000
-        #mask, if any of occ vector rows not >0
+        
         mask = (occ_vector > 0).all(axis=0)
         occ_vector = occ_vector.loc[:, mask]
         muts_vector = muts_vector.loc[:, mask]
 
         print(f"bin length after filtering low coverage: {len(occ_vector.columns)}")
-        
         
         cpg_muts=[str(m) for m in self.cpg_muts]
         cpg_vector=muts_vector.loc[cpg_muts,:].sum().div(occ_vector.loc[cpg_muts,:].sum().replace(0, np.nan))
@@ -305,14 +243,7 @@ class BestNonCpGCandidatesBeam(Operations):
         non_cpg_vector=non_cpg_vector[non_cpg_vector>0]
         print(f"non-cpg vector length after filtering na,0: {len(non_cpg_vector)}")
         
-        #first remove based on rank -so removing same bins from for every cpg removal percentage
-        '''
-        keep_rank=self.remove_based_on_rank(cpg_vector,non_cpg_vector,cutoff=None)
-
-        cpg_vector=cpg_vector.loc[keep_rank]
-        non_cpg_vector=non_cpg_vector.loc[keep_rank]
-        print(f"bin length after filtering by rank: {len(cpg_vector)}")
-        '''
+        
         
         cpg_high=cpg_vector[cpg_vector>=cpg_vector.quantile(remove_low)].index
         non_cpg_high=non_cpg_vector[non_cpg_vector>=non_cpg_vector.quantile(remove_low)].index
@@ -339,7 +270,7 @@ class BestNonCpGCandidatesBeam(Operations):
         #keep_indices=self.filter_dicts_low_mut_rank(occ_dict,muts_dict,cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff)
         
         #filter only on low mut
-        keep_indices=self.filter_low_mut(occ_dict,muts_dict,self.cpg_remove_percentage,self.cutoff)
+        keep_indices=self.filter_low_mut(occ_dict,muts_dict,self.cpg_remove_percentage)
 
         #testing removing top 20% most mutable bins, based on cpg and non-cpg rates, 
         # to see if it improves correlation and gives more stable candidates
@@ -357,9 +288,7 @@ class BestNonCpGCandidatesBeam(Operations):
         for mut in self.non_cpg_muts:
 
             group = [mut]
-            #R^2 for linear regression through origin
-            #score=self.score_group_linear_regression(group, occ_vector, muts_vector) 
-            #calculates correlations within group to cpgs
+            
             score = self.score_group(group, occ_vector, muts_vector)
             beam.append((group, score))
 

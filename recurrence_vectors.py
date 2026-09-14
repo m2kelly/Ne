@@ -33,23 +33,10 @@ class ReccurenceVectors(Operations):
         else: self.cpg_muts = [c for c in cpgs if str(c) in self.occ_dict_raw['chr1'].index]
 
         self.non_cpg_muts = non_cpgs
-        self.remove_percentage = 0.00
-
-        self.cpg_vector_original = None
-        self.chosen_non_cpg_vector_original = None
-        self.cpg_backward_vector_original = None
-        self.chosen_non_cpg_backward_vector_original = None
         
 
-        self.cpg_vector_mrkv_corrected = None
-        self.chosen_non_cpg_vector_mrkv_corrected = None
-        self.cpg_backward_vector_mrkv_corrected = None
-        self.chosen_non_cpg_backward_vector_mrkv_corrected = None
-
-        self.best_static = None
-        self.best_bins = None
-        self.CpG_remove_percentage = None
-        self.no_recurrence = None
+        
+        
 
     
 
@@ -60,29 +47,10 @@ class ReccurenceVectors(Operations):
             mutations = [m for m in mutations if str(m) in pool]
         return mutations
 
-    def export_arrays_before_after_mrkov(self, cpg_box, non_cpg_box,_b, _c, c, nc, cb, ncb, name):
-        before_cpg = [np.median(cpg_box[i])/self.generations for i in range(len(cpg_box))]
-        before_non_cpg = [np.median(non_cpg_box[i])/self.generations for i in range(len(non_cpg_box))]
-        before_cpg_backward = [np.median(_b[i])/self.generations for i in range(len(_b))]
-        before_chosen_non_cpg_backward = [np.median(_c[i])/self.generations for i in range(len(_c))]
-        self.write_logs(f'for {name}:')
-        self.write_logs(f'\tuncorrected cpg: {before_cpg}\n\tuncorrected non_cpg: {before_non_cpg}\n\tuncorrected cpg_backward: {before_cpg_backward}\n\tuncorrected chosen_non_cpg_backward: {before_chosen_non_cpg_backward}\n')
-        self.cpg_vector_mrkv_corrected = c
-        self.chosen_non_cpg_vector_mrkv_corrected = nc
-        self.cpg_backward_vector_mrkv_corrected = cb
-        self.chosen_non_cpg_backward_vector_mrkv_corrected = ncb
-        percent_change_cpg = [(c[i] - before_cpg[i])/before_cpg[i] for i in range(len(c))]
-        percent_change_non_cpg = [(nc[i] - before_non_cpg[i])/before_non_cpg[i] for i in range(len(nc))]
-        percent_change_cpg_backward = [(cb[i] - before_cpg_backward[i])/before_cpg_backward[i] for i in range(len(cb))]
-        percent_change_chosen_non_cpg_backward = [(ncb[i] - before_chosen_non_cpg_backward[i])/before_chosen_non_cpg_backward[i] for i in range(len(ncb))]
-
-        self.write_logs(f'\tcorrected cpg: {c}\n\tcorrected non_cpg: {nc}\n\tcorrected cpg_backward: {cb}\n\tcorrected chosen_non_cpg_backward: {ncb}\n')
-        self.write_logs(f'\tpercent change cpg: {percent_change_cpg}\n\tpercent change non_cpg: {percent_change_non_cpg}\
-                        \n\tpercent change cpg_backward: {percent_change_cpg_backward}\n\tpercent change chosen_non_cpg_backward: {percent_change_chosen_non_cpg_backward}\n')
-
+  
     def get_matrices(self):
-        '''a lits of the occs and muts matrices from the smoothed dictionaries based
-           on the indeces, editted so uses unsmoothed dicts
+        '''based on selected indices it extracts from the raw dicts a list
+        of the summed occs and summed muts per category per big bin
         '''
         #muts = deepcopy(self.muts_dict_smoothed); occs = deepcopy(self.occ_dict_smoothed)
         muts=es.rename_cols(self.muts_dict_raw)
@@ -100,7 +68,7 @@ class ReccurenceVectors(Operations):
         return muts_matrices, occs_matrices
 
     def get_markov_input_matrices(self, muts_matrices, occs_matrices):
-        '''returns an initial state, final state and a transition matrix for each matrix
+        '''returns an initial state, final state and a inital guess for transition matrix for each matrix
         '''
         groups = []
         for muts, occs in zip(muts_matrices, occs_matrices):
@@ -135,30 +103,12 @@ class ReccurenceVectors(Operations):
 
         return groups
     
-    def genome_ratio_matrix(self):
-        '''get genome wide weighting per category = p(XXX->Y)/SUM_y p(XXX->y)
-        division by occ XXX in numerator and denomenator cancel out'''
-        #index=XXX->Y, columns=bins
-        muts=es.rename_cols(self.muts_dict_raw)      
-        #sum all bins
-        muts['muts']=muts.sum(axis=1)
-        #extract trinuc context XXX from mut XXX->Y
-        muts["trinuc"] = muts.index.astype(str).str[:3]
-        # sum mutations over all alt bases for same trinuc
-        muts["trinuc_sum"] = muts.groupby("trinuc")["muts"].transform("sum")
-        # relative weight of each mut type within its trinuc context
-        muts["weights"] = muts["muts"] / muts["trinuc_sum"]
-        self.weights=muts['weights']
-        return
-        
-
-
-        
+     
 
     def get_vector_item_from_best_guess(self, best_guess, weights_matrix, occs_matrix=None, muts_matrix=None):
         '''returns the vector item from the best guess
         weights matrix=muts/occs
-        this step where i should collapse the different strands? -currently NOT DOING THIS
+        works across full 64x 64 matrix
         '''
        
 
@@ -197,9 +147,12 @@ class ReccurenceVectors(Operations):
         return all_rates, all_occs
     
     def get_mrkv_corrected_vctrs(self, generations=None):
-        if generations is None: generations = self.generations
-        '''returns the best transition matrix for each group
         '''
+        returns the best transition matrix for each group by trying different transition matrices
+        and minimizing the difference between the observed and expected final state
+        '''
+        if generations is None: generations = self.generations
+        
         muts_matrices, occs_matrices = self.get_matrices()
         
         groups = self.get_markov_input_matrices(muts_matrices, occs_matrices)

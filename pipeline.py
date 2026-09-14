@@ -40,7 +40,7 @@ class Pipeline(Operations):
         self.cpg_muts = [x for x in all_cpgs if str(x) in self.occ_dict_raw['chr1'].index]
         
         #TESTING WITH ONE CATEORY
-        #self.cpg_muts=[self.cpg_muts[0]]
+        self.cpg_muts=[self.cpg_muts[0]]
         self.cpgs=self.cpg_muts
         
         self.smoothing_range = smoothing_range
@@ -59,6 +59,10 @@ class Pipeline(Operations):
     
     
     def bin_vectors(self,beam,bins=5):
+        '''
+        bin the cpg and non cpg vectors based on mutability
+        returns a list of lists of indicies for each bin, based on orginial occ dict raw indicies
+        '''
         filtered_indices_ordered=beam.filter_dicts_low_mut_rank(self.occ_dict_raw,self.muts_dict_raw,non_cpg_labels=self.best_candidates,cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff)
         
         #filtered_indices_ordered=beam.filter_dicts_low_mut_ints_ranks(self.occ_dict_raw,self.muts_dict_raw,non_cpg_labels=self.best_candidates,remove_low=self.cpg_remove_percentage,cutoff=self.cutoff)
@@ -72,72 +76,11 @@ class Pipeline(Operations):
        
    
     
-    def run_search_test(self,cutoff):
-        #test categories
-        if self.non_cpg_pool is None:
-            self.non_cpg_pool = es.get_general_non_cpg_pool()
-
-        for x in np.arange(0,0.75,0.05):
-            print(x)
-            cpg_remove_percentage=x
-            self.prefix='test_regression_with_intcp/'+str(x) + '/'
-            try: os.makedirs(self.prefix)
-            except FileExistsError: pass
-
-
-            beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
-                                                best_smoothing=1,
-                                                cpgs=self.cpgs, non_cpg_pool=self.non_cpg_pool,
-                                                collapse=self.collapse,
-                                                muts_dict_raw=self.muts_dict_raw,
-                                                occ_dict_raw=self.occ_dict_raw,
-                                                cpg_remove_percentage=cpg_remove_percentage,cutoff=cutoff,
-                                                prefix=self.prefix, operations=self)
-            if not self.best_candidates: 
-            #choose by beam search
-                
-                best_candidates = beam.get_best_candidates()
-                self.non_cpg_muts = best_candidates
-                self.best_candidates = [str(x) for x in best_candidates]
-
-            else:
-                self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates] #mut objects for best candidates,used in recc vectors
-            self.write_logs(f'Best non cpg candidates: {self.best_candidates}')
-            self.indices=self.bin_vectors(beam,bins=100)
-            self.plot_bins()
-            self.best_candidates=None #reset for next round, to choose by beam search again
-
-    def plot_raw_rates(self):
-        muts_vector=es.rename_cols(self.muts_dict_raw)
-        occ_vector=es.rename_cols(self.occ_dict_raw)
-        
-        cpg_labels=[str(x) for x in self.cpg_muts]
-        non_cpg_labels=[str(x) for x in muts_vector.index if str(x) not in cpg_labels] #as collapse trinucs
-        cpg_muts = muts_vector.loc[cpg_labels].sum()
-        cpg_occs_copy = occ_vector.loc[cpg_labels].sum()
-
-        non_cpg_muts = muts_vector.loc[non_cpg_labels].sum()
-        non_cpg_occs_copy = occ_vector.loc[non_cpg_labels].sum()
-        #remove nans for plotting
-        cpg_rate = cpg_muts / cpg_occs_copy
-        non_cpg_rate = non_cpg_muts / non_cpg_occs_copy
-        mask =  cpg_rate.notna() & non_cpg_rate.notna()
-        cpg_rate = cpg_rate.loc[mask]
-        non_cpg_rate = non_cpg_rate.loc[mask]
-        plt.clf()
-        plt.title('CpG vs non CpG raw rates')
-        #plt.hist2d
-        plt.hexbin(np.array(non_cpg_rate).flatten(), np.array(cpg_rate).flatten(), bins=300)
-        plt.xlabel('Non-CpG subs, raw')
-        plt.ylabel('CpG subs, raw')
-        plt.colorbar(label='mut rate in bin frequency')
-        
-        plt.savefig(f'raw_rates_hist2d.png')
-
 
     def plot_bins(self):
-        #plot binned rates
-        #testing smoothing!!!
+        '''
+        plot binned rates of cpg vs non cpg, before recurrence correction'''
+        
         muts_vector=es.rename_cols(self.muts_dict_raw)
         occ_vector=es.rename_cols(self.occ_dict_raw)
         cpg=[]
@@ -201,23 +144,65 @@ class Pipeline(Operations):
             index=s.index,
             name=s.name,
         )        
+
    
     def smooth_dict(self,dict):
+        '''
+        optional smoothing of the occ and mut dicts, to reduce noise in low mutability bins'''
         smoothed_dict={}
         for chr,df in dict.items():
             smoothed_dict[chr] = df.apply(self.gaussian_smooth_series,axis=1)
         return smoothed_dict
+    
+    @staticmethod
+    def extract_non_cpg_per_context(mut):
+        '''
+        if using 4 allele model and want to extract all other non cpg mutations for a given cpg mutation, 
+        this function will return all other non cpg mutations in the same trinucleotide context
+        input cpg mut: trinuc->alt XCG->T'''
+        BASES=['A','C','G','T']
+        
+        other_muts=[]
+        trinuc=mut.tri
+        left_flank=trinuc[0]
+        right_flank=trinuc[2]
+        ref=trinuc[1] #G
+        alt=mut.base  #T
+        for x in BASES:
+            for y in BASES:
+                if x==y:
+                    continue
+                if (x==ref) & (y==alt):
+                    continue
+                other_muts.append(es.mutation(left_flank+x+right_flank,y))
+        print(f'Mutation: {mut}, Other Mutations: {other_muts}')
+        return other_muts
+
 
 
     def run_pipeline(self,CpG_remove_percentage=0.0,cutoff=0.8):
-    
-        self.plot_raw_rates()
+        '''
+        main calling of pipeline
+        '''
+        #self.plot_raw_rates()
         self.cutoff=cutoff
         
 
         if self.non_cpg_pool is None:
             self.non_cpg_pool = es.get_general_non_cpg_pool()
 
+        #TESTING always use all 4 allele alt alleles per cpg category
+        '''
+        non_cpg_muts=[]
+        for cpg in self.cpg_muts:
+            non_cpg_muts=non_cpg_muts+self.extract_non_cpg_per_context(cpg)
+        self.non_cpg_muts=[x if str(x) in self.occ_dict_raw['chr1'].index else x.get_rev_comp() for x in non_cpg_muts]
+        print(f'Non CpG pool: {self.non_cpg_muts}')
+        self.best_candidates=[str(x) for x in self.non_cpg_muts]
+        print(f'Best candidates: {self.best_candidates}')
+        self.cpg_non_cpg_dict={self.cpg_muts[i]:self.non_cpg_muts for i in range(len(self.cpg_muts))}
+        '''
+                        
         while CpG_remove_percentage<=0.75:
         
             self.write_logs(f'Running pipeline with CpG remove percentage: {CpG_remove_percentage}')
@@ -230,7 +215,7 @@ class Pipeline(Operations):
             self.write_logs('Getting best non cpg candidates')
             #choosing candidates by linear regression of each non cpg with cpg pooled
             
-            #TRIALS step 1 smooth bins
+            #OPTIONAL smoothing of occ and muts dicts
             #self.muts_dict_raw=self.smooth_dict(self.muts_dict_raw)
             #self.occ_dict_raw=self.smooth_dict(self.occ_dict_raw)
 
@@ -245,11 +230,10 @@ class Pipeline(Operations):
             
             
             
-            
             if not self.best_candidates: 
             #choose by beam search
                 self.cpg_non_cpg_dict={}
-                #for cpg_mut in self.cpg_muts:
+                #for cpg_mut in self.cpg_muts: #if want to regress seperatly per cpg,rather than mean across cpgs
                 beam=BestNonCpGCandidatesBeam(name=self.name, directory=self.directory,
                                     best_smoothing=1,
                                     cpgs=self.cpg_muts, non_cpg_pool=self.non_cpg_pool,
@@ -259,8 +243,11 @@ class Pipeline(Operations):
                                     cpg_remove_percentage=self.cpg_remove_percentage,cutoff=self.cutoff,
                                     prefix=self.prefix, operations=self)
         
-                best_candidates = beam.get_best_candidates()
-                self.cpg_non_cpg_dict={self.cpg_muts[i]:best_candidates[i] for i in range(4)}
+                non_cpg_muts = beam.get_best_candidates()  #returns list of mut objects
+                #merging all and running one regression 
+                self.cpg_non_cpg_dict={self.cpg_muts:non_cpg_muts}
+                #if running regression per cpg-non-cpg pair and want to keep seperate
+                #self.cpg_non_cpg_dict={self.cpg_muts[i]:best_candidates[i] for i in range(4)}
                 
                 self.write_logs(f'cpg_non_cpg_dict {self.cpg_non_cpg_dict}')
                 self.non_cpg_muts=[x for x in self.cpg_non_cpg_dict.values()]
@@ -270,27 +257,25 @@ class Pipeline(Operations):
 
             else:
                 self.non_cpg_muts=[x for x in self.non_cpg_pool if str(x) in self.best_candidates.values()] #mut objects for best candidates,used in recc vectors
+
+            
             self.write_logs(f'cpg candidates {self.cpg_muts}')
             self.write_logs(f'Best non cpg candidates: {self.best_candidates}')
         
         
             
             self.write_logs('filtering and binning')
-            #self.indices=self.bin_and_plot(cpg_remove=self.cpg_remove_percentage,cutoff=self.cutoff,non_cpg_labels=self.best_candidates)
+
             self.indices=self.bin_vectors(beam,bins=100)
-            
+            #iniices is a list of lists of indicies for each bin
+            #based on orginial occ dict raw indicies
             for bin in self.indices:
                 print(len(bin))
             self.plot_bins()
             
             
-            #iniices is a list of lists of indicies for each bin
-            #based on orginial occ dict raw indicies
-
+    
             self.write_logs('running recurrence vectors')
-            #do instance of recurrence vector here, setting noncpg?? 
-            
-            
             reccur=ReccurenceVectors(self.name, self.directory,
                                 indices=self.indices,
                                 non_cpgs=self.non_cpg_muts, cpgs=self.cpgs,
@@ -322,7 +307,7 @@ class Pipeline(Operations):
                             directory=self.prefix, operations=self)
             popcalc.cpg_non_cpg_dict=self.cpg_non_cpg_dict
             popcalc.rates_dict=rates_dict
-            popcalc.calc_best_pop_regress_per_category()
+            popcalc.calc_best_pop_regress_once()
             popcalc.plot_correction()
             self.write_logs(f'best pop:{popcalc.best_pop}, min error:{popcalc.min_error}')
             

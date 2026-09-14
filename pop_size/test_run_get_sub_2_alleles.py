@@ -15,7 +15,7 @@ run with python -m NeParallel.pop_size.test_run_get_sub_4_alleles'''
 
 N_power=2
 no_sims=10
-output_fig=f'4_allele_subs/N_1e{N_power}.svg'
+output_fig=f'/home/dweghorngroup/test_avg_rate/beta_4_allele_renewal_beam/4_alleles_subs/2_allele_N_1e{N_power}_equal.svg'
 predictor = Predictor()
 plt.rcParams.update({'font.size': 16})
 import pandas as pd
@@ -67,7 +67,7 @@ mu_power=N_power+2
 muts=np.linspace(10**(-mu_power-1), 10**(-mu_power), no_sims)
 N_e = int(10**N_power)
 BASES = ["A", "C", "G", "T"]
-
+'''
 mu_dicts=[
         {
                 "A": {"A": 0.0, "C": 10*mu,     "G": mu, "T": mu},
@@ -84,54 +84,35 @@ mu_dicts=[
                 "T": {"A": 0,     "C": 0,  "G": 0, "T": 0.0},
             }
     for mu in muts]
-'''
+
 print(mu_dicts[0])
-subs_beta=[predictor.get_sub_rate_diffusion_beta(GPA(mu,mu, pop_size=int(N_e))) for mu in muts]
-#get_sub_rate_diffusion_prob_hit
+
 subs_2_neutral=[predictor.get_sub_rate_diffusion_beta(GPA(mu,mu, pop_size=int(N_e))) for mu in muts]
 subs_2_high_low=[predictor.get_sub_rate_diffusion_beta(GPA(10*mu,mu, pop_size=int(N_e))) for mu in muts]
 subs_2_low_high=[predictor.get_sub_rate_diffusion_beta(GPA(mu,mu*10, pop_size=int(N_e))) for mu in muts]
+print('finished computing 2 allele diff')
+subs_2_neutral_wfes=[predictor.get_sub_rate_exact(GPA(mu,mu, pop_size=int(N_e))) for mu in muts]
+subs_2_high_low_wfes=[predictor.get_sub_rate_exact(GPA(10*mu,mu, pop_size=int(N_e))) for mu in muts]
+subs_2_low_high_wfes=[predictor.get_sub_rate_exact(GPA(mu,mu*10, pop_size=int(N_e))) for mu in muts]
 
-print('finished computing 2 allele')
-print(time.time())
-subs_4_allele_matrices=[predictor.get_sub_rate_diffusion_4_allele_renewal(GPA(0,0, pop_size=int(N_e)),
-            mu_matrix=mu_dict) for mu_dict in mu_dicts]
+
+print('finished computing 2 allele exact')
+
 #each run returns nested dict of sub rates 
-print('finished computing 4 allele')
-print(time.time())
-print('last marix')
 
-last_dict={a+'->'+b:subs_4_allele_matrices[no_sims-1][a][b] for a in BASES for b in BASES }
-print(pd.Series(last_dict).sort_values())
-rates_dict={a+'->'+b:[subs_4_allele_matrices[i][a][b] for i in range(no_sims)] for a in BASES for b in BASES }
-#print(rates_dict)
-#take the mean of the matrices
 bins=[x for x in range(no_sims)]
 fig, ax = plt.subplots(figsize=(8, 5))
 
-ax.plot(bins, muts, color="red", label="input mut rate")
-ax.plot(bins, [10 * x for x in muts], color="red", linestyle="--", label="input mut rate A->C")
+ax.plot(bins, muts, color="red", label="input mut normal")
+#ax.plot(bins, [10 * x for x in muts], color="red", linestyle="--", label="input mut rate high")
 
-linestyles = ["-", "--", "-.", ":"]
-i=0
-for a in BASES:
-    for b in BASES:
-        if a == b:
-            continue
-        #if a!='A': continue
-        ax.plot(
-            bins,
-            rates_dict[a + "->" + b],
-            alpha=0.5,
-            label=a + "->" + b + " sub rate",
-            linestyle=linestyles[i%len(linestyles)],
-            linewidth=2
-        )
-        i+=1
+ax.plot(bins, subs_2_neutral_wfes, color="green",label="wfes mu->mu")
+#ax.plot(bins, subs_2_high_low_wfes, color="green",label="wfes 10mu->mu")
+#ax.plot(bins, subs_2_low_high_wfes, color="green",label="wfes mu->10mu")
 
-ax.plot(bins, subs_2_neutral, color="black", linestyle="--",label="2 alelles mu->mu")
-ax.plot(bins, subs_2_high_low, color="black", linestyle="--",label="2 alelles 10mu->mu")
-ax.plot(bins, subs_2_low_high, color="black", linestyle="--",label="2 alelles mu->10mu")
+ax.plot(bins, subs_2_neutral, color="black", linestyle="--",label="beta mu->mu")
+#ax.plot(bins, subs_2_high_low, color="black", linestyle="--",label="beta 10mu->mu")
+#ax.plot(bins, subs_2_low_high, color="black", linestyle="--",label="beta mu->10mu")
 ax.set_xlabel("bin")
 ax.set_ylabel("rate")
 
